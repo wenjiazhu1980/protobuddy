@@ -1,0 +1,255 @@
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
+import { api } from '../api.js';
+
+export default function PlanReview() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [project, setProject] = useState(null);
+  const [plans, setPlans] = useState([]);
+  const [selectedPlan, setSelectedPlan] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  const load = useCallback(async () => {
+    try {
+      const [p, planList] = await Promise.all([
+        api.getProject(id),
+        api.listPlans(id).catch(() => [])
+      ]);
+      setProject(p);
+      setPlans(planList);
+      if (planList.length > 0 && !selectedPlan) {
+        setSelectedPlan(planList[0]);
+      }
+    } catch (err) {
+      showToast('加载失败: ' + err.message, 'error');
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleApproveChange = async (changeId) => {
+    try {
+      await api.approveChange(selectedPlan.id, changeId);
+      // Update local state
+      const updated = {
+        ...selectedPlan,
+        changes: selectedPlan.changes.map(c =>
+          c.id === changeId ? { ...c, status: 'approved' } : c
+        )
+      };
+      setSelectedPlan(updated);
+      setPlans(plans.map(p => p.id === updated.id ? updated : p));
+    } catch (err) {
+      showToast('操作失败: ' + err.message, 'error');
+    }
+  };
+
+  const handleRejectChange = async (changeId) => {
+    try {
+      await api.rejectChange(selectedPlan.id, changeId);
+      const updated = {
+        ...selectedPlan,
+        changes: selectedPlan.changes.map(c =>
+          c.id === changeId ? { ...c, status: 'rejected' } : c
+        )
+      };
+      setSelectedPlan(updated);
+      setPlans(plans.map(p => p.id === updated.id ? updated : p));
+    } catch (err) {
+      showToast('操作失败: ' + err.message, 'error');
+    }
+  };
+
+  const handleApplyPlan = async () => {
+    const approvedCount = selectedPlan.changes?.filter(c => c.status === 'approved').length || 0;
+    if (approvedCount === 0) {
+      showToast('请先批准至少一条修改建议', 'error');
+      return;
+    }
+    if (!confirm(`确定应用 ${approvedCount} 条已批准的修改？这将修改原型文件并自动重新部署。`)) return;
+
+    setApplying(true);
+    try {
+      const result = await api.applyPlan(selectedPlan.id);
+      if (result.success) {
+        showToast(`成功应用 ${result.appliedCount} 条修改，原型已重新部署`);
+      } else {
+        showToast(`应用完成，但有 ${result.errorCount} 个错误: ${result.errors?.join('; ')}`, 'error');
+      }
+      load();
+      navigate(`/project/${id}`);
+    } catch (err) {
+      showToast('应用失败: ' + err.message, 'error');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const statusBadge = (status) => {
+    const map = {
+      pending: { cls: 'badge-yellow', text: '待审核' },
+      approved: { cls: 'badge-green', text: '已通过' },
+      rejected: { cls: 'badge-red', text: '已驳回' },
+      applied: { cls: 'badge-blue', text: '已应用' },
+    };
+    const s = map[status] || { cls: 'badge-gray', text: status };
+    return <span className={`badge ${s.cls}`}>{s.text}</span>;
+  };
+
+  const planStatusBadge = (status) => {
+    const map = {
+      draft: { cls: 'badge-yellow', text: '草稿' },
+      approved: { cls: 'badge-green', text: '已批准' },
+      rejected: { cls: 'badge-red', text: '已驳回' },
+      applied: { cls: 'badge-blue', text: '已应用' },
+    };
+    const s = map[status] || { cls: 'badge-gray', text: status };
+    return <span className={`badge ${s.cls}`}>{s.text}</span>;
+  };
+
+  if (loading) {
+    return <div className="main-content"><div className="loading-container"><div className="spinner" /><span>加载中...</span></div></div>;
+  }
+
+  return (
+    <div className="main-content" style={{ paddingTop: 16 }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <Link to={`/project/${id}`} style={{ fontSize: 13 }}>← 返回仪表盘</Link>
+          <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>{project?.name} · 方案审核</h1>
+        </div>
+        <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/review`)}>← 返回评审</button>
+      </div>
+
+      {/* Plan selector */}
+      {plans.length > 1 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header">
+            <span className="card-title">方案列表</span>
+          </div>
+          <div className="card-body" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {plans.map(p => (
+              <button
+                key={p.id}
+                className={`btn btn-sm ${selectedPlan?.id === p.id ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setSelectedPlan(p)}
+              >
+                方案 #{p.id} · {planStatusBadge(p.status)} · {new Date(p.created_at).toLocaleDateString('zh-CN')}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {plans.length === 0 ? (
+        <div className="card">
+          <div className="empty-state">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width: 64, height: 64, margin: '0 auto 16px', opacity: 0.4 }}>
+              <path d="M9 11l3 3L22 4" />
+              <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
+            </svg>
+            <div className="empty-state-title">还没有修改方案</div>
+            <div className="empty-state-desc">在评审页面添加批注后，点击「生成修改方案」让 Agent 生成结构化建议</div>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => navigate(`/project/${id}/review`)}>前往评审 →</button>
+          </div>
+        </div>
+      ) : selectedPlan ? (
+        <div>
+          {/* Plan summary */}
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span className="card-title">方案 #{selectedPlan.id}</span>
+                {planStatusBadge(selectedPlan.status)}
+                <span className={`badge ${selectedPlan.method === 'makers' ? 'badge-blue' : 'badge-yellow'}`}>
+                  {selectedPlan.method === 'makers' ? `Makers Models${selectedPlan.model ? ` · ${selectedPlan.model}` : ''}` : '规则引擎'}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary" onClick={handleApplyPlan} disabled={applying || selectedPlan.status === 'applied'}>
+                  {applying ? '应用中...' : '应用已批准的修改'}
+                </button>
+              </div>
+            </div>
+            <div className="card-body">
+              <div style={{ marginBottom: 12 }}>
+                <strong>摘要：</strong> {selectedPlan.summary}
+              </div>
+              {selectedPlan.method !== 'makers' && selectedPlan.fallback_reason && (
+                <div style={{ marginBottom: 12, padding: 10, background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 6, fontSize: 12, color: '#7c2d12' }}>
+                  <strong>⚠ 本次使用了规则引擎兜底：</strong> {selectedPlan.fallback_reason}
+                </div>
+              )}
+              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                基于批注: {selectedPlan.annotations?.length || 0} 条 ·
+                修改建议: {selectedPlan.changes?.length || 0} 条 ·
+                生成时间: {new Date(selectedPlan.created_at).toLocaleString('zh-CN')}
+              </div>
+            </div>
+          </div>
+
+          {/* Change list */}
+          <div>
+            <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>修改建议 ({selectedPlan.changes?.length || 0})</h3>
+            {selectedPlan.changes?.map((change, idx) => (
+              <div key={change.id} className="plan-change-card">
+                <div className="plan-change-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontWeight: 600 }}>#{idx + 1}</span>
+                    {statusBadge(change.status)}
+                    <span style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{change.file_path}</span>
+                  </div>
+                  <div style={{ display: 'flex', gap: 4 }}>
+                    {change.status === 'pending' && (
+                      <>
+                        <button className="btn btn-sm btn-secondary" style={{ color: 'var(--red)' }} onClick={() => handleRejectChange(change.id)}>驳回</button>
+                        <button className="btn btn-sm btn-primary" onClick={() => handleApproveChange(change.id)}>通过</button>
+                      </>
+                    )}
+                    {change.status === 'approved' && (
+                      <span style={{ fontSize: 12, color: 'var(--green)' }}>✓ 已通过，等待应用</span>
+                    )}
+                    {change.status === 'rejected' && (
+                      <span style={{ fontSize: 12, color: 'var(--red)' }}>✕ 已驳回</span>
+                    )}
+                    {change.status === 'applied' && (
+                      <span style={{ fontSize: 12, color: 'var(--primary)' }}>✓ 已应用</span>
+                    )}
+                  </div>
+                </div>
+                <div className="plan-change-body">
+                  <div style={{ marginBottom: 8 }}>{change.description}</div>
+                  {change.old_code && (
+                    <div>
+                      <div className="code-label">原代码</div>
+                      <pre className="code-block">{change.old_code}</pre>
+                    </div>
+                  )}
+                  {change.new_code && (
+                    <div>
+                      <div className="code-label" style={{ color: 'var(--green)' }}>新代码</div>
+                      <pre className="code-block" style={{ background: '#0f172a', borderLeft: '3px solid var(--green)' }}>{change.new_code}</pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
+    </div>
+  );
+}

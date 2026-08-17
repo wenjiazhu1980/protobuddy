@@ -1,0 +1,19 @@
+{
+  "name": "protobuddy-makers",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ProtoBuddy full-stack deployment package for EdgeOne Makers (Cloud Functions + static frontend)",
+  "scripts": {
+    "build": "rm -rf dist && cp -r frontend/dist dist",
+    "build:local": "cd frontend && npm run build && cd .. && rm -rf dist && cp -r frontend/dist dist"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "adm-zip": "^0.5.16",
+    "uuid": "^10.0.0",
+    "@edgeone/pages-blob": "^0.0.16"
+  }
+}
