@@ -269,5 +269,13 @@ export function apiBaseFromReq(req) {
   const eoHost = req.headers['eo-pages-host'];
   const proto = eoHost ? 'https' : (req.headers['x-forwarded-proto'] || req.protocol || 'http');
   const host = eoHost || req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3001';
-  return `${proto}://${host}`;
+  let base = `${proto}://${host}`;
+  // 请求本身带 eo_token（部署链接访问）时回显到 hint，外部 CLI 需要它做平台授权握手
+  if (req.query && req.query.eo_token) {
+    const q = new URLSearchParams();
+    q.set('eo_token', req.query.eo_token);
+    if (req.query.eo_time) q.set('eo_time', req.query.eo_time);
+    base += `?${q.toString()}`;
+  }
+  return base;
 }

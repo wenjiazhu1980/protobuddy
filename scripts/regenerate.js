@@ -55,13 +55,15 @@ ProtoBuddy 生成器外部执行环境 CLI
 
 必填:
   --project <id>      项目 id（如 1）
-  --api <baseURL>     线上 API 根地址（如 https://protobuddy-app.edgeone.cool）
+  --api <baseURL>     线上 API 根地址；EdgeOne 部署链接可整段粘贴（含
+                      ?eo_token=...&eo_time=...，CLI 自动完成平台授权握手）
+                      （如 https://protobuddy-app.edgeone.cool?eo_token=xx&eo_time=yy）
   --password <pw>     owner 操作密码（与 --token 二选一；验证后签发 8h 有效 token）
   --token <token>     已签发的 owner token（与 --password 二选一）
 
 可选:
   --skip-deploy       只拉取→生成→回写，不触发重新部署
-  --force             部署时跳过生成器检查（确认产物已最新时使用）
+  --force             仅手动指定时也跳过生成器检查（默认：生成后自动带 force 部署）
   --workdir <dir>     本地工作目录（默认系统临时目录）
   --keep              结束后保留工作目录（默认清理）
   --verbose           打印执行细节
@@ -105,11 +107,53 @@ function parseArgs(argv) {
 
 /* --------------------------------- HTTP 工具 --------------------------------- */
 
+// EdgeOne Pages 平台对任意请求强制 eo_token/cookie 授权。URL 带 eo_token 时先做
+// 两步握手换 cookie（GET health 跟随 302 拿 Set-Cookie），后续请求带 cookie。
+let cookieJar = '';
+
+function stripAuthQuery(api) {
+  try {
+    const u = new URL(api);
+    u.search = '';
+    return u.toString().replace(/\/+$/, '');
+  } catch {
+    return api.replace(/\/+$/, '');
+  }
+}
+
+/**
+ * 平台授权握手。返回 { base, authorized }：
+ * - URL 含 eo_token/eo_time → GET health 跟随重定向换 cookie，base 剥离授权参数；
+ * - URL 无 eo_token（本地 dev / 已授权环境）→ 原样返回，不握手。
+ */
+async function ensureAuthorized(api, verbose) {
+  const base = api.replace(/\/+$/, '');
+  try {
+    const u = new URL(base);
+    if (!u.searchParams.has('eo_token')) return { base, authorized: false };
+    // 注意：不能用 `${base}/api/health` 字符串拼接——base 带 query 时会被拼到
+    // query 后面变成 ?eo_token=...&eo_time=.../api/health（请求打到根路径）。
+    // 用 URL 对象设置 pathname 保留 query。
+    u.pathname = '/api/health';
+    // redirect:'manual' 关键：跟随重定向会吞掉 302 的 Set-Cookie（fetch 不暴露
+    // 中间响应头，而 curl -c jar 会存），必须手动读 302 响应拿授权 cookie。
+    const res = await fetch(u.toString(), { redirect: 'manual', signal: AbortSignal.timeout(45000) });
+    const setCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+    cookieJar = setCookies.map((c) => c.split(';')[0]).join('; ');
+    if (verbose) console.log(`[regenerate] 平台授权: status=${res.status}, cookie=${cookieJar ? '已获取' : '无（可能已过期）'}`);
+    return { base: stripAuthQuery(base), authorized: !!cookieJar };
+  } catch (err) {
+    throw new Error(`平台授权握手失败: ${err.message}`);
+  }
+}
+
 async function apiFetch(url, options = {}, timeoutMs = 90000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    const headers = { ...(options.headers || {}) };
+    if (cookieJar) headers['cookie'] = cookieJar;
+    const res = await fetch(url, { ...options, headers, signal: ctrl.signal });
     const text = await res.text();
     let json = null;
     try { json = JSON.parse(text); } catch { /* non-JSON body */ }
@@ -258,6 +302,10 @@ async function main() {
 
   console.log(`[regenerate] 项目 #${opts.project} @ ${opts.api}`);
 
+  // 0. EdgeOne 平台授权握手（URL 带 eo_token 时换 cookie）
+  const auth = await ensureAuthorized(opts.api, opts.verbose);
+  if (auth.authorized) opts.api = auth.base;
+
   // 1. owner 验证
   const token = await getOwnerToken(opts.api, opts.project, opts.password, opts.token);
 
@@ -312,8 +360,11 @@ async function main() {
   if (opts.skipDeploy) {
     console.log('[regenerate] --skip-deploy：跳过部署，产物已回写线上存储（可在评审页手动触发部署）');
   } else {
-    console.log(`[regenerate] 触发重新部署${opts.force ? '（--force 跳过生成器检查）' : ''}…`);
-    const { status, json } = await deploy(opts.api, opts.project, token, opts.force);
+    // CLI 刚重新生成产物（或本就没有生成器），部署必须带 force 跳过生成器检查，
+    // 否则线上函数又返回 regenerateRequired（死循环：部署永远被拦）。
+    const deployForce = opts.force || !!generator;
+    console.log(`[regenerate] 触发重新部署${deployForce ? '（产物已重新生成，跳过生成器检查）' : ''}…`);
+    const { status, json } = await deploy(opts.api, opts.project, token, deployForce);
     console.log(`[regenerate] 部署接口响应 (HTTP ${status}):`);
     console.log(`  success=${json?.success}  method=${json?.method}  version=${json?.version}`);
     if (json?.regenerateRequired) {
