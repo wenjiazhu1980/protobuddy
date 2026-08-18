@@ -107,6 +107,16 @@
 - **线上验证（2026-08-18，commit 70181d2 + a5b316a + 2cf77a3）**：部署 protobuddy-app 5 次全成功（最新 deployment `dpm3i8q2b3sn`，前端 `index-CSuTloga.js`）。blob 模式两条分支实测通过：普通 deploy → `regenerateRequired:true + generator:phase-2/_gen_pages.py` 不误部署；`?force=1` → 正常部署。修复 hint 域名坑：EdgeOne 重写 `host` 为内部 SCF host、无 x-forwarded-* 头，公共域名在 **`eo-pages-host`** 头（临时 `_debug/headers` 端点实测后已移除）。**CLI 完整链路线上实测通过**（用户确认后）：握手 → owner 验证 → 拉取 41 文件 → 执行生成器（重写 22 个 HTML）→ diff 回写 2 文件 → 自动 force 部署 v26 → shop-demo 验证内容一致 ✓。CLI 修复 4 个 bug：平台授权握手（manual redirect 拿 302 cookie）、URL 拼接打错路径、生成后部署死循环（自动 force）、前端命令带 eo_token（location.search）。
 - **方案 A 全链路闭环达成**：local 模式（后端自动执行）+ blob 模式信号（regenerateRequired）+ blob 模式外部执行（CLI）三条路径全部线上/本地验证完毕。
 
+## 迭代 22.1 完成：plan 249 apply 409 排查与修复（v27）
+- **现象**：`POST /api/projects/plans/249/apply` → 409 "old_code 在 phase-2/_gen_pages.py 中匹配 2 次"。唯一性保护（`content.split(old_code).length-1 > 1` 即拒绝）工作正常。
+- **根因**：plan 242 曾把「gen-note 备注」插入新建的 `index_page_html()` 函数，但该函数**从未被 `main()` 调用（死代码）**——线上 index.html 实际由 `render_index()` 生成、无备注 → 评审重复批注 3 次（242/245/249）；change 的 old_code（PROTOTYPE 徽章块）在死函数与活函数中同时出现 → 匹配 2 次被拒。
+- **修复（方案 A 直接改生成器）**：删死代码 `index_page_html()`（-2349 chars）+ 在 `render_index()` 加 `.gen-note`（CSS 与 HTML；f-string 内花括号 `{{ }}` 转义）→ py_compile 通过 → 上传线上存储 → CLI regenerate（重写 22 页，仅 index.html 变化）→ 自动 force 部署 **v27**（shop-demo.edgeone.dev）→ 线上 index.html 含备注 ✓。
+- **收尾**：reject plan 245/249 + change 246/250（避免再 apply 插入重复备注），annotation 241 → resolved。
+
+## 迭代 22.2 完成：生成器防歧义规则入 systemPrompt（deployment dpp1fc7bel40）
+- 将 plan 249 教训固化为 `makersModels.js` systemPrompt 的「GENERATOR-SCRIPT precision rule」：① 生成器文件 old_code 必须带唯一函数锚点、扩展至恰匹配 1 次；② 必须改 main() 实际调用、输出直达目标文件的函数（如 render_index()），禁止改死函数；③ description 注明改后需重新生成 HTML。
+- 构建 + 部署 protobuddy-app 成功，/api/health 200；新规则对后续 AI 生成的方案立即生效。
+
 ## 运行方式
 - 开发模式: 后端(3001) + 前端dev(5173)，Vite代理API
 - 生产模式: `cd frontend && npm run build` → `cd backend && npm start`（单服务器）
