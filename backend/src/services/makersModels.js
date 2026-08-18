@@ -79,41 +79,47 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
     // exist. Strategy: head of the file + windows around occurrences of the
     // annotated page name(s) and the generator entrypoint (def main).
     //
-    // TOKEN BUDGET: EdgeOne Cloud Functions have a 120s hard timeout. DeepSeek
-    // reasoning models process input tokens slowly, so we cap total context at
-    // ~40k chars (≈12k tokens) to keep generation under 100s.
+    // TOKEN BUDGET: EdgeOne Cloud Functions have a 120s hard timeout.
+    // Reasoning models (deepseek-v4, kimi-k2, minimax) process input tokens
+    // slowly, so we cap context at ~12k chars / 6 files to stay under 100s.
+    // Non-reasoning models (deepseek-chat, @makers/hy3) are 3-5x faster, so we
+    // give them MUCH more context (30k chars, 10 files, wider excerpts) — this
+    // directly improves old_code precision and reduces dry-run match failures.
+    const isReasoningModel = /kimi-k2|deepseek-v4|minimax/i.test(model || '');
+    const CTX = isReasoningModel
+      ? { maxFileChars: 12000, maxFiles: 6, headLen: 1200, excerptBefore: 400, excerptAfter: 2000, maxExcerpts: 5, smallFileThreshold: 6000 }
+      : { maxFileChars: 30000, maxFiles: 10, headLen: 2000, excerptBefore: 800, excerptAfter: 3000, maxExcerpts: 8, smallFileThreshold: 16000 };
     const pageHints = [...new Set(
       annotations
         .map(a => (a.page || '').split('/').pop())
         .filter(p => p && p.length >= 4)
     )];
-    const MAX_FILE_CTX = 12000;
     const buildFileContext = (f) => {
       if (f.content?.binary) return '[binary file]';
       const data = f.content?.data || '';
-      if (data.length <= 6000) return data;
-      let ctx = data.slice(0, 1200);
+      if (data.length <= CTX.smallFileThreshold) return data;
+      let ctx = data.slice(0, CTX.headLen);
       const hints = [...pageHints, 'def main'];
       let used = 0;
       for (const hint of hints) {
         let idx = 0;
-        while (ctx.length < MAX_FILE_CTX) {
+        while (ctx.length < CTX.maxFileChars) {
           const pos = data.indexOf(hint, idx);
           if (pos === -1) break;
-          const start = Math.max(1200, pos - 400);
-          const end = Math.min(data.length, pos + 2000);
+          const start = Math.max(CTX.headLen, pos - CTX.excerptBefore);
+          const end = Math.min(data.length, pos + CTX.excerptAfter);
           if (end > start) {
             ctx += `\n\n[... excerpt of ${f.path} around "${hint}" at offset ${pos} ...]\n` + data.slice(start, end);
             used++;
           }
           idx = pos + 1;
-          if (used > 5) break;
+          if (used > CTX.maxExcerpts) break;
         }
-        if (used > 5) break;
+        if (used > CTX.maxExcerpts) break;
       }
       return `(LARGE FILE — showing head + excerpts around the annotated page / entrypoint; offsets are approximate)\n${ctx}\n[END OF ${f.path} EXCERPTS]`;
     };
-    const filesText = files.slice(0, 6).map(f => {
+    const filesText = files.slice(0, CTX.maxFiles).map(f => {
       return `--- File: ${f.path} ---\n${buildFileContext(f)}`;
     }).join('\n\n');
 
@@ -178,14 +184,12 @@ ${filesText}${feedbackBlock}
 
 Generate a modification plan in JSON format.`;
 
-    console.log(`[makersModels] Calling Makers Models API (model=${model})...`);
+    console.log(`[makersModels] Calling Makers Models API (model=${model}, reasoning=${isReasoningModel})...`);
 
-    // Kimi K2.x is a reasoning model: the Moonshot API REJECTS the `temperature`
-    // parameter for it (400001 invalid_request_parameters). Reasoning models use
-    // fixed sampling, so we must omit temperature for them.
-    // deepseek-v4 / minimax also emit reasoning (reasoning_content / <think>),
-    // so treat them as reasoning models too: more tokens + longer timeout.
-    const isReasoningModel = /kimi-k2|deepseek-v4|minimax/i.test(model || '');
+    // isReasoningModel was determined above (before file context building) so
+    // we could use model-dependent context limits. Same variable reused here.
+    // Reasoning models: omit temperature (API rejects it), more max_tokens,
+    // longer timeout. Non-reasoning: temperature=0.3, fewer tokens, shorter timeout.
     const payload = {
       model,
       messages: [
