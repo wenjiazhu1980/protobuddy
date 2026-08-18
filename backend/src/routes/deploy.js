@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { getById, insert, update, query } from '../db.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
 import { prepareForDeploy, probeGeneratorEnv, apiBaseFromReq } from '../services/generator.js';
-import { checkDeployment, getProjectUrl } from '../services/makersApi.js';
+import { checkDeployment, getProjectUrl, describeProjectDomains, getOrCreateProject } from '../services/makersApi.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
@@ -190,6 +190,27 @@ router.post('/:id/preview-url', requireOwnerAuth, async (req, res) => {
   });
 
   res.json({ success: true, url, deployment_id: deployment.id });
+});
+
+// Diagnostic: list all custom domains bound to the project in EdgeOne
+router.get('/:id/domains', async (req, res) => {
+  const project = await getById('projects', req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (!project.edgeone_token) return res.json({ error: 'No EdgeOne token configured' });
+
+  try {
+    // Resolve the Makers project ID by name
+    const { projectId } = await getOrCreateProject(project.edgeone_token, project.edgeone_project_name || `proto-${project.slug || project.id}`);
+    const info = await describeProjectDomains(project.edgeone_token, projectId);
+    res.json({
+      configured_custom_domain: project.custom_domain || '',
+      edgeone_project_name: project.edgeone_project_name || '',
+      edgeone_project_id: projectId,
+      ...info
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // List deployments for a project

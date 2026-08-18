@@ -264,32 +264,67 @@ export async function getProjectUrl(token, projectId, opts = {}) {
 
   const allCustom = proj.CustomDomains || [];
 
+  console.log(`[makersApi] getProjectUrl: projectId=${projectId}, preferredDomain=${opts.preferredDomain || '(none)'}`);
+  console.log(`[makersApi] CustomDomains: ${JSON.stringify(allCustom.map(d => ({ Domain: d.Domain, Status: d.Status })))}`);
+  console.log(`[makersApi] PresetDomain=${proj.PresetDomain}, IsTld=${proj.IsTld}`);
+
   // 1. If user configured a preferred domain, try to match it first
   if (opts.preferredDomain) {
     const norm = opts.preferredDomain.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
     const matched = allCustom.find(d =>
-      (d.Domain || '').toLowerCase() === norm && d.Status === 'Pass'
+      (d.Domain || '').toLowerCase() === norm && isDomainActive(d)
     );
-    if (matched) return { url: `https://${matched.Domain}`, customDomainBound: true };
+    if (matched) {
+      console.log(`[makersApi] Preferred domain matched (active): ${matched.Domain}`);
+      return { url: `https://${matched.Domain}`, customDomainBound: true };
+    }
 
-    // Domain configured but not yet Pass — report status so frontend can show guidance
+    // Domain configured but not yet active — report status so frontend can show guidance
     const pending = allCustom.find(d => (d.Domain || '').toLowerCase() === norm);
     if (pending) {
+      console.log(`[makersApi] Preferred domain found but not active (status=${pending.Status || 'unknown'}), falling back`);
       // Fall through to other domains / preset, but include status info
       const fallback = await resolvePresetOrAnyCustom(token, proj, allCustom);
-      return { ...fallback, customDomainBound: false, customDomainStatus: pending.Status };
+      return { ...fallback, customDomainBound: false, customDomainStatus: pending.Status || 'unknown' };
     }
     // Domain not found in EdgeOne at all — user hasn't bound it yet
+    console.log(`[makersApi] Preferred domain '${norm}' NOT FOUND in EdgeOne custom domains, falling back`);
     const fallback = await resolvePresetOrAnyCustom(token, proj, allCustom);
     return { ...fallback, customDomainBound: false, customDomainStatus: 'not_bound' };
   }
 
   // 2. No preferred domain — use any Pass custom domain, then preset
   const fallback = await resolvePresetOrAnyCustom(token, proj, allCustom);
+  console.log(`[makersApi] No preferred domain, resolved: ${fallback.url}`);
   return fallback;
 }
 
-/** Suffix-based domain priority: domains matching this pattern are preferred over others. */
+/**
+ * Query EdgeOne for all custom domains bound to a project (diagnostic).
+ * @returns {Promise<{presetDomain:string, isTld:boolean, customDomains:Array<{Domain:string,Status:string}>}>}
+ */
+export async function describeProjectDomains(token, projectId) {
+  const res = await callApi(token, 'DescribePagesProjects', {
+    Filters: [{ Name: 'ProjectId', Values: [projectId] }], Offset: 0, Limit: 10, OrderBy: 'CreatedOn'
+  });
+  const proj = (res.Data?.Response?.Projects || [])[0];
+  if (!proj) throw new Error('Project not found in EdgeOne');
+  return {
+    presetDomain: proj.PresetDomain || '',
+    isTld: proj.IsTld === 1,
+    customDomains: (proj.CustomDomains || []).map(d => ({ Domain: d.Domain, Status: d.Status || '(missing — treated as active)' }))
+  };
+}
+
+/**
+ * Check if a custom domain entry is "active" (usable as a URL).
+ * EdgeOne API sometimes omits the Status field entirely for bound domains,
+ * so we treat missing/empty Status as valid (the domain is in the list = bound).
+ */
+function isDomainActive(d) {
+  const s = d.Status;
+  return !s || s === 'Pass' || s === 'Active';
+}
 const PREFERRED_DOMAIN_SUFFIX = '.20140107.xyz';
 
 /**
@@ -297,7 +332,7 @@ const PREFERRED_DOMAIN_SUFFIX = '.20140107.xyz';
  * Priority: Pass domain matching *.20140107.xyz → any Pass domain → null.
  */
 function pickBestCustomDomain(allCustom) {
-  const passDomains = allCustom.filter(d => d.Status === 'Pass');
+  const passDomains = allCustom.filter(d => isDomainActive(d));
   if (passDomains.length === 0) return null;
   // Prefer domains ending with the suffix (e.g. cis2.20140107.xyz)
   const preferred = passDomains.find(d => (d.Domain || '').toLowerCase().endsWith(PREFERRED_DOMAIN_SUFFIX));
