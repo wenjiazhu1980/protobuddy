@@ -164,9 +164,15 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
       const target = normalizePage(page);
       const iframe = iframeRef.current;
       if (!iframe) return;
+      // Encode each path segment individually so that '/' stays a path
+      // separator. encodeURIComponent('merchant/m-stores.html') would produce
+      // 'merchant%2Fm-stores.html', which makes some browsers resolve relative
+      // resource URLs (e.g. ../shared/common.css) against the wrong base path,
+      // causing CSS to fail to load.
+      const encodedTarget = target.split('/').map(encodeURIComponent).join('/');
       const nextSrc = target === 'index.html'
         ? previewUrl
-        : `${previewUrl}${encodeURIComponent(target)}`;
+        : `${previewUrl}${encodedTarget}`;
       if (iframe.src !== nextSrc) {
         iframe.src = nextSrc;
         // Optimistically update currentPage; __protoNav will correct it once loaded.
