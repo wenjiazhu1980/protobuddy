@@ -238,6 +238,7 @@ router.post('/:id/plan', async (req, res) => {
   });
 
   // Generate plan
+  const genStartTime = Date.now();
   let result = await generatePlanWithMakers(
     project.makers_key,
     annotations,
@@ -258,9 +259,17 @@ router.post('/:id/plan', async (req, res) => {
   // Auto-retry once (Makers path only): feed the concrete validation errors
   // AND any unaddressed annotations back to the model so it can fix paths /
   // old_code / missing coverage itself.
+  //
+  // TIME BUDGET GUARD: Cloud Functions have a 120s hard timeout. If the first
+  // generation already consumed most of the budget (e.g. DeepSeek reasoning
+  // models take 60-90s), a second call would push total past 120s → 504.
+  // Skip the retry if less than 40s of budget remains.
   const errCount = vs => vs.filter(v => v.status === 'error').length;
+  const elapsedMs = Date.now() - genStartTime;
+  const RETRY_BUDGET_MS = 40000; // need at least 40s left to attempt a retry
   if (result.method === 'makers'
-    && (errCount(validations) > 0 || consistency.uncovered_count > 0)) {
+    && (errCount(validations) > 0 || consistency.uncovered_count > 0)
+    && elapsedMs < (120000 - RETRY_BUDGET_MS)) {
     const feedback = [
       buildFeedback(rawChanges, validations),
       buildConsistencyFeedback(consistency)
@@ -297,6 +306,10 @@ router.post('/:id/plan', async (req, res) => {
       console.warn(`[plans] Retry generation failed: ${retryErr.message}`);
     }
     retried = true;
+  } else if (result.method === 'makers'
+    && (errCount(validations) > 0 || consistency.uncovered_count > 0)
+    && elapsedMs >= (120000 - RETRY_BUDGET_MS)) {
+    console.log(`[plans] Skipping auto-retry: only ${Math.round((120000 - elapsedMs) / 1000)}s budget left (first gen took ${Math.round(elapsedMs / 1000)}s), would exceed 120s CF timeout`);
   }
 
   const errorCount = validations.filter(v => v.status === 'error').length;

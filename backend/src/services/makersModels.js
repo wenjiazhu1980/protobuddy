@@ -58,17 +58,21 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
     // deep in the file and makes the model HALLUCINATE functions that do not
     // exist. Strategy: head of the file + windows around occurrences of the
     // annotated page name(s) and the generator entrypoint (def main).
+    //
+    // TOKEN BUDGET: EdgeOne Cloud Functions have a 120s hard timeout. DeepSeek
+    // reasoning models process input tokens slowly, so we cap total context at
+    // ~40k chars (≈12k tokens) to keep generation under 100s.
     const pageHints = [...new Set(
       annotations
         .map(a => (a.page || '').split('/').pop())
         .filter(p => p && p.length >= 4)
     )];
-    const MAX_FILE_CTX = 30000;
+    const MAX_FILE_CTX = 12000;
     const buildFileContext = (f) => {
       if (f.content?.binary) return '[binary file]';
       const data = f.content?.data || '';
       if (data.length <= 6000) return data;
-      let ctx = data.slice(0, 1500);
+      let ctx = data.slice(0, 1200);
       const hints = [...pageHints, 'def main'];
       let used = 0;
       for (const hint of hints) {
@@ -76,20 +80,20 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
         while (ctx.length < MAX_FILE_CTX) {
           const pos = data.indexOf(hint, idx);
           if (pos === -1) break;
-          const start = Math.max(1500, pos - 600);
-          const end = Math.min(data.length, pos + 3200);
+          const start = Math.max(1200, pos - 400);
+          const end = Math.min(data.length, pos + 2000);
           if (end > start) {
             ctx += `\n\n[... excerpt of ${f.path} around "${hint}" at offset ${pos} ...]\n` + data.slice(start, end);
             used++;
           }
           idx = pos + 1;
-          if (used > 8) break;
+          if (used > 5) break;
         }
-        if (used > 8) break;
+        if (used > 5) break;
       }
       return `(LARGE FILE — showing head + excerpts around the annotated page / entrypoint; offsets are approximate)\n${ctx}\n[END OF ${f.path} EXCERPTS]`;
     };
-    const filesText = files.slice(0, 10).map(f => {
+    const filesText = files.slice(0, 6).map(f => {
       return `--- File: ${f.path} ---\n${buildFileContext(f)}`;
     }).join('\n\n');
 
@@ -170,23 +174,40 @@ Generate a modification plan in JSON format.`;
       ],
       // Reasoning models spend tokens on `reasoning_content` first; give them
       // more room so the final JSON content is not truncated.
-      max_tokens: isReasoningModel ? 8000 : 4000,
+      max_tokens: isReasoningModel ? 6000 : 4000,
       response_format: { type: 'json_object' }
     };
     if (!isReasoningModel) {
       payload.temperature = 0.3;
     }
 
-    const response = await fetch(MAKERS_MODELS_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify(payload),
-      // Reasoning models think before answering; give them more time.
-      signal: AbortSignal.timeout(isReasoningModel ? 120000 : 60000)
-    });
+    // Cloud Functions have a 120s hard timeout (edgeone.json maxDuration: 120).
+    // Leave 10s buffer for other processing (reading files, parsing JSON, etc.)
+    // so the fetch itself doesn't exceed the platform limit and cause a 504.
+    const fetchTimeoutMs = isReasoningModel ? 105000 : 50000;
+
+    let response;
+    try {
+      response = await fetch(MAKERS_MODELS_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(fetchTimeoutMs)
+      });
+    } catch (fetchErr) {
+      const isTimeout = fetchErr.name === 'TimeoutError' || fetchErr.name === 'AbortError';
+      if (isTimeout) {
+        throw new Error(
+          `模型响应超时（${Math.round(fetchTimeoutMs / 1000)}s）。` +
+          `推理模型生成方案需要较长时间，已超过平台 Cloud Function 120s 上限。` +
+          `建议：① 减少批注数量后分批生成；② 换用更快的模型（如 @makers/hy3 或 @makers/deepseek-v4-flash）。`
+        );
+      }
+      throw fetchErr;
+    }
 
     if (!response.ok) {
       const errText = await response.text();
