@@ -12,7 +12,8 @@
  *      e.g. @makers/hy3, @makers/deepseek-v4-flash, @makers/kimi-k2.6
  *   2. Vendor models (vendor/name format) — requires binding the vendor's
  *      own API key in the Makers console → Models & Keys page.
- *      e.g. deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro
+ *      e.g. deepseek/deepseek-chat (non-reasoning, fast, recommended),
+ *           deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro (reasoning)
  *
  * Security: API key is never sent to frontend. All calls go through backend.
  */

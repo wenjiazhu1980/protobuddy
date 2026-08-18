@@ -35,6 +35,7 @@ export default function Settings() {
   // Vendor models: require binding the vendor's own API key in the Makers console.
   // Same gateway endpoint & auth, just a different model id prefix (vendor/name).
   const VENDOR_MODELS = [
+    { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat（厂商·非推理·快·推荐）' },
     { id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash（厂商·推理·快）' },
     { id: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro（厂商·推理·质量高）' }
   ];
