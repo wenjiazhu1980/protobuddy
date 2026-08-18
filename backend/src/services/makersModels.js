@@ -27,7 +27,7 @@ const DEFAULT_MODEL = '@makers/hy3';
  *   Injected into the system prompt so the model follows project-specific rules.
  * @returns {Promise<{success: boolean, plan?: object, error?: string, method: string}>}
  */
-export async function generatePlanWithMakers(apiKey, annotations, files, model = DEFAULT_MODEL, agentsRules = '') {
+export async function generatePlanWithMakers(apiKey, annotations, files, model = DEFAULT_MODEL, agentsRules = '', retryFeedback = '') {
   if (!apiKey) {
     console.log('[makersModels] No API key provided, using rule-based fallback');
     return generateRuleBasedPlan(annotations, files);
@@ -124,11 +124,22 @@ Rules:
   2. onclick handlers or scripts calling window.open('relative.html', '_blank') → change to window.location.href = 'relative.html'.
 - Do NOT change external absolute links (http:// or https://) unless the annotation explicitly asks for it.
 ${rulesBlock}`
+    // Dry-run precheck feedback: when a previous attempt's changes failed the
+    // automated match validation (file missing / old_code not found / ambiguous),
+    // the caller regenerates with the concrete errors appended here so the model
+    // can fix its own mistakes instead of surfacing them at apply time.
+    const feedbackBlock = retryFeedback
+      ? `\n\n## VALIDATION ERRORS FROM YOUR PREVIOUS ATTEMPT
+Your previously generated changes FAILED automated prechecks. Fix EVERY error below and output the FULL corrected plan.
+For each error, re-read the provided file excerpts, copy old_code character-for-character from the real file content, ensure it matches EXACTLY ONCE, and use only file paths from the "--- File: <path>" headers.
+${retryFeedback}`
+      : '';
+
     const userPrompt = `## Annotations:
 ${annotationsText}
 
 ## Current Files:
-${filesText}
+${filesText}${feedbackBlock}
 
 Generate a modification plan in JSON format.`;
 

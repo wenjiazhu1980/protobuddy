@@ -76,39 +76,6 @@ router.post('/:id/plan', async (req, res) => {
     console.warn(`[plans] Failed to load agents.md: ${err.message}`);
   }
 
-  // Generate plan
-  const result = await generatePlanWithMakers(
-    project.makers_key,
-    annotations,
-    filesWithContent,
-    project.makers_model || undefined,
-    agentsRules
-  );
-
-  if (!result.success) {
-    return res.status(500).json({ error: result.error || 'Failed to generate plan' });
-  }
-
-  // Create plan record
-  const plan = await insert('plans', {
-    project_id: req.params.id,
-    annotations: annotations.map(a => ({
-      id: a.id,
-      x: a.x,
-      y: a.y,
-      page: a.page,
-      content: a.content,
-      author: a.author,
-      element_info: a.element_info || null
-    })),
-    summary: result.plan.summary || '',
-    status: 'draft',
-    method: result.method,
-    model: result.model || '',
-    fallback_reason: result.fallbackReason || ''
-  });
-
-  // Create plan change records.
   // Path auto-heal: models sometimes copy paths from agents.md that reflect the
   // author's LOCAL machine layout (e.g. "原型设计/phase-2/x.py" while storage has
   // "phase-2/x.py"). If a change's file_path is not a known storage path, try to
@@ -127,21 +94,174 @@ router.post('/:id/plan', async (req, res) => {
     }
     return p; // leave as-is; apply will surface a clear error
   };
-  const changes = [];
-  for (const change of (result.plan.changes || [])) {
-    const healedPath = normalizePath(change.file_path);
-    if (healedPath !== change.file_path) {
-      console.log(`[plans] Path auto-heal: "${change.file_path}" -> "${healedPath}"`);
+
+  // ---- Dry-run match precheck ---------------------------------------------
+  // Immediately after generation, verify every change against the REAL file
+  // content (same rules the apply endpoint enforces):
+  //   - target file must exist and not be binary
+  //   - old_code must be found EXACTLY ONCE (0 = hallucinated code, >1 = unsafe)
+  // This catches bad plans at generation time. If any change fails and the plan
+  // came from Makers Models, we regenerate ONCE with the concrete errors fed
+  // back into the prompt, keeping whichever attempt has fewer errors.
+  const contentMap = new Map(filesWithContent.map(f => [f.path, f.content]));
+  const getContent = async (p) => {
+    if (contentMap.has(p)) return contentMap.get(p);
+    const c = await readFileContent(req.params.id, p);
+    contentMap.set(p, c);
+    return c;
+  };
+  const precheckChanges = async (rawChanges) => {
+    const results = [];
+    for (const change of rawChanges) {
+      const v = { status: 'ok', match_count: null, message: '' };
+      try {
+        const content = await getContent(change.file_path);
+        if (!content) {
+          v.status = 'error';
+          v.message = `文件不存在: ${change.file_path}`;
+        } else if (content.binary) {
+          v.status = 'error';
+          v.message = `目标是二进制文件，无法应用文本修改: ${change.file_path}`;
+        } else if (change.old_code && change.new_code) {
+          const n = content.data.split(change.old_code).length - 1;
+          v.match_count = n;
+          if (n === 0) {
+            v.status = 'error';
+            v.message = 'old_code 未在文件中找到（代码可能为模型凭空构造）';
+          } else if (n > 1) {
+            v.status = 'error';
+            v.message = `old_code 在文件中匹配 ${n} 次，无法安全应用（需扩大上下文至唯一匹配）`;
+          }
+        } else if (change.new_code) {
+          v.status = 'warn';
+          v.message = '未提供 old_code，应用时将追加到文件末尾';
+        } else {
+          v.status = 'error';
+          v.message = '无可执行的代码变更';
+        }
+      } catch (err) {
+        v.status = 'warn';
+        v.message = `预检失败（应用时仍会校验）: ${err.message}`;
+      }
+      results.push(v);
     }
+    return results;
+  };
+  const buildFeedback = (rawChanges, validations) => {
+    return rawChanges
+      .map((c, i) => {
+        const v = validations[i];
+        if (v.status !== 'error') return '';
+        const snippet = (c.old_code || '').slice(0, 200).replace(/\n/g, '\\n');
+        return `[${i + 1}] file_path: ${c.file_path}\n    error: ${v.message}${snippet ? `\n    offending old_code (first 200 chars): ${snippet}` : ''}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+  };
+
+  const normalizeChanges = (rawChanges) => (rawChanges || []).map(c => {
+    const healed = normalizePath(c.file_path);
+    if (healed !== c.file_path) {
+      console.log(`[plans] Path auto-heal: "${c.file_path}" -> "${healed}"`);
+    }
+    return { ...c, file_path: healed };
+  });
+
+  // Generate plan
+  let result = await generatePlanWithMakers(
+    project.makers_key,
+    annotations,
+    filesWithContent,
+    project.makers_model || undefined,
+    agentsRules
+  );
+
+  if (!result.success) {
+    return res.status(500).json({ error: result.error || 'Failed to generate plan' });
+  }
+
+  let rawChanges = normalizeChanges(result.plan.changes);
+  let validations = await precheckChanges(rawChanges);
+  let retried = false;
+
+  // Auto-retry once (Makers path only): feed the concrete validation errors
+  // back to the model so it can fix paths / old_code itself.
+  if (result.method === 'makers' && validations.some(v => v.status === 'error')) {
+    const feedback = buildFeedback(rawChanges, validations);
+    console.log(`[plans] Dry-run precheck failed (${validations.filter(v => v.status === 'error').length} error(s)), retrying generation with feedback...`);
+    try {
+      const retry = await generatePlanWithMakers(
+        project.makers_key,
+        annotations,
+        filesWithContent,
+        project.makers_model || undefined,
+        agentsRules,
+        feedback
+      );
+      if (retry.success) {
+        const retryChanges = normalizeChanges(retry.plan.changes);
+        const retryValidations = await precheckChanges(retryChanges);
+        const errCount = a => a.filter(v => v.status === 'error').length;
+        if (errCount(retryValidations) < errCount(validations)) {
+          console.log(`[plans] Retry improved precheck errors ${errCount(validations)} -> ${errCount(retryValidations)}, adopting retry result`);
+          result = retry;
+          rawChanges = retryChanges;
+          validations = retryValidations;
+        } else {
+          console.log(`[plans] Retry did not improve precheck (still ${errCount(retryValidations)} error(s)), keeping first attempt`);
+        }
+      }
+    } catch (retryErr) {
+      console.warn(`[plans] Retry generation failed: ${retryErr.message}`);
+    }
+    retried = true;
+  }
+
+  const errorCount = validations.filter(v => v.status === 'error').length;
+  const warnCount = validations.filter(v => v.status === 'warn').length;
+  const precheck = {
+    checked: validations.length,
+    passed: errorCount === 0,
+    error_count: errorCount,
+    warn_count: warnCount,
+    retried
+  };
+  console.log(`[plans] Dry-run precheck: ${precheck.passed ? 'PASSED' : 'FAILED'} (${errorCount} error, ${warnCount} warn, retried=${retried})`);
+
+  // Create plan record
+  const plan = await insert('plans', {
+    project_id: req.params.id,
+    annotations: annotations.map(a => ({
+      id: a.id,
+      x: a.x,
+      y: a.y,
+      page: a.page,
+      content: a.content,
+      author: a.author,
+      element_info: a.element_info || null
+    })),
+    summary: result.plan.summary || '',
+    status: 'draft',
+    method: result.method,
+    model: result.model || '',
+    fallback_reason: result.fallbackReason || '',
+    precheck
+  });
+
+  // Create plan change records (with per-change dry-run validation attached).
+  const changes = [];
+  for (let i = 0; i < rawChanges.length; i++) {
+    const change = rawChanges[i];
     changes.push(await insert('planChanges', {
       plan_id: plan.id,
       project_id: req.params.id,
       annotation_id: change.annotation_id || null,
-      file_path: healedPath,
+      file_path: change.file_path,
       description: change.description || '',
       old_code: change.old_code || '',
       new_code: change.new_code || '',
-      status: 'pending'
+      status: 'pending',
+      validation: validations[i] || null
     }));
   }
 
