@@ -46,14 +46,51 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
       return `[${i + 1}] Page: ${a.page || 'index.html'}, Position: (${a.x}%, ${a.y}%), Comment: "${a.content}"${elementLine}`;
     }).join('\n');
 
+    // Build file context. Large files (e.g. 260KB generator scripts) cannot be
+    // sent whole; slicing the first N chars hides the target page's definition
+    // deep in the file and makes the model HALLUCINATE functions that do not
+    // exist. Strategy: head of the file + windows around occurrences of the
+    // annotated page name(s) and the generator entrypoint (def main).
+    const pageHints = [...new Set(
+      annotations
+        .map(a => (a.page || '').split('/').pop())
+        .filter(p => p && p.length >= 4)
+    )];
+    const MAX_FILE_CTX = 30000;
+    const buildFileContext = (f) => {
+      if (f.content?.binary) return '[binary file]';
+      const data = f.content?.data || '';
+      if (data.length <= 6000) return data;
+      let ctx = data.slice(0, 1500);
+      const hints = [...pageHints, 'def main'];
+      let used = 0;
+      for (const hint of hints) {
+        let idx = 0;
+        while (ctx.length < MAX_FILE_CTX) {
+          const pos = data.indexOf(hint, idx);
+          if (pos === -1) break;
+          const start = Math.max(1500, pos - 600);
+          const end = Math.min(data.length, pos + 3200);
+          if (end > start) {
+            ctx += `\n\n[... excerpt of ${f.path} around "${hint}" at offset ${pos} ...]\n` + data.slice(start, end);
+            used++;
+          }
+          idx = pos + 1;
+          if (used > 8) break;
+        }
+        if (used > 8) break;
+      }
+      return `(LARGE FILE — showing head + excerpts around the annotated page / entrypoint; offsets are approximate)\n${ctx}\n[END OF ${f.path} EXCERPTS]`;
+    };
     const filesText = files.slice(0, 10).map(f => {
-      const content = f.content?.binary ? '[binary file]' : (f.content?.data || '').slice(0, 2000);
-      return `--- File: ${f.path} ---\n${content}`;
+      return `--- File: ${f.path} ---\n${buildFileContext(f)}`;
     }).join('\n\n');
 
     // Optional project rules from the prototype's agents.md (injected into the system prompt)
+    // NOTE: rules may embed the author's LOCAL machine paths (e.g. "原型设计/phase-2/x.py")
+    // which do NOT exist in platform storage — the systemPrompt forbids using them.
     const rulesBlock = agentsRules
-      ? `\n## Project Rules (from the prototype's agents.md — MUST follow these when generating changes):\n${agentsRules}\n`
+      ? `\n## Project Rules (from the prototype's agents.md — follow these for CONTENT decisions; but any file paths mentioned here reflect the author's local machine and are NOT valid in this project — use only the paths from the files list):\n${agentsRules}\n`
       : '';
 
     const systemPrompt = `You are a prototype review assistant. Based on the reviewer's annotations on a prototype, generate a structured modification plan. For each annotation, suggest specific file changes. Respond in JSON format ONLY (no markdown code fences):
@@ -70,8 +107,10 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
   ]
 }
 Rules:
-- file_path must be one of the provided file paths (e.g. 原型设计/index.html). Keep the exact subdirectory prefix if present.
+- file_path must be copied VERBATIM from the "--- File: <path>" headers of the project files list in the user message. Keep the exact subdirectory prefix as shown there.
+- Paths that appear inside agents.md / project rules may come from ANOTHER machine's local folder layout (e.g. "原型设计/phase-2/..." while storage has "phase-2/..."). NEVER use paths from the rules text as file_path — always use the storage-relative path from the files list.
 - old_code must be a substring that actually exists in the current file, so it can be replaced.
+- NEVER invent or reconstruct code that is not shown in the provided file excerpts. If the section you need is not visible in the excerpts, still build old_code ONLY from lines that appear verbatim in the excerpts (e.g. the file's real function/definition structure). Copy old_code character-for-character from the excerpt text.
 - Every annotation should map to one change.
 - CRITICAL precision rule: if an annotation includes "Target element" info, you MUST modify ONLY that exact element. Use the element's tag name, id, class, and path to build a unique old_code snippet. The old_code must include the target element's opening tag (with id/class attributes) and enough parent context so it matches EXACTLY ONCE in the file. Do NOT perform plain text replacements that could hit other parts of the page.
 - If no element info is provided, infer the target from the coordinate position (y≈top means header/hero, y≈bottom means footer) and still include the surrounding HTML context in old_code.

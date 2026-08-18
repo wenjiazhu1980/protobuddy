@@ -32,7 +32,11 @@ router.post('/:id/plan', async (req, res) => {
   const targetPages = [...new Set(annotations.map(a => a.page).filter(Boolean))];
   const rank = f => {
     const hit = targetPages.findIndex(p => f.path === p || f.path.endsWith('/' + p));
-    return hit === -1 ? 999 : hit;
+    if (hit !== -1) return hit;
+    // Generator scripts rank above unrelated pages — agents.md conventions
+    // require structural edits to go into the generator (e.g. _gen_pages.py),
+    // so it must reliably make it into the model's context.
+    return /\.py$/i.test(f.path) ? 500 : 999;
   };
   const selectedFiles = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, 10);
   const filesWithContent = [];
@@ -104,14 +108,36 @@ router.post('/:id/plan', async (req, res) => {
     fallback_reason: result.fallbackReason || ''
   });
 
-  // Create plan change records
+  // Create plan change records.
+  // Path auto-heal: models sometimes copy paths from agents.md that reflect the
+  // author's LOCAL machine layout (e.g. "原型设计/phase-2/x.py" while storage has
+  // "phase-2/x.py"). If a change's file_path is not a known storage path, try to
+  // rewrite it via unique suffix match against the project's real file paths.
+  const knownPaths = new Set(fileRecords.map(f => f.path));
+  const normalizePath = (p) => {
+    if (!p || knownPaths.has(p)) return p;
+    const suffixHits = [...knownPaths].filter(k => k.endsWith('/' + p) || p.endsWith('/' + k));
+    if (suffixHits.length === 1) return suffixHits[0];
+    // also try matching just the last two segments (e.g. "phase-2/_gen_pages.py")
+    const segs = String(p).split('/');
+    if (segs.length >= 2) {
+      const tail = segs.slice(-2).join('/');
+      const tailHits = [...knownPaths].filter(k => k === tail || k.endsWith('/' + tail));
+      if (tailHits.length === 1) return tailHits[0];
+    }
+    return p; // leave as-is; apply will surface a clear error
+  };
   const changes = [];
   for (const change of (result.plan.changes || [])) {
+    const healedPath = normalizePath(change.file_path);
+    if (healedPath !== change.file_path) {
+      console.log(`[plans] Path auto-heal: "${change.file_path}" -> "${healedPath}"`);
+    }
     changes.push(await insert('planChanges', {
       plan_id: plan.id,
       project_id: req.params.id,
       annotation_id: change.annotation_id || null,
-      file_path: change.file_path || '',
+      file_path: healedPath,
       description: change.description || '',
       old_code: change.old_code || '',
       new_code: change.new_code || '',
