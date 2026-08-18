@@ -95,6 +95,18 @@
 - dbBlob.js 的 insert 勿调 nextId()（其内部 reload 会覆盖新表）；已内联 id 生成
 - 部署前必须先 `npx edgeone makers build --mode prod`（否则可能复用旧 cloud function 快照）
 
+## 迭代 22 完成：方案 A 生成器外部执行环境（commit 70181d2，本地验证全过）
+- **问题**：方案应用后 agent 改 Python 生成器脚本（`_gen_pages.py`），apply 正确写入 blob、部署正常执行，但缺「执行生成器重新生成 HTML」环节 → 部署的仍是旧 HTML。
+- **方案（双模式）**：部署/apply 前统一走 `prepareForDeploy`：
+  - local 模式：后端直接 `exec python3`（cwd=脚本目录，120s 超时）自动重新生成 → 完整闭环；
+  - blob 模式（线上 Cloud Function 只读 FS 无法 exec Python）：响应 `regenerateRequired:true + generator + hint`，由本地 CLI `npm run regenerate -- --project <id> --api <baseURL> --password <pw>` 完成「owner 验证 → 拉取（优先 storage-files）→ python3 执行 → SHA1 快照 diff → 回写 → 触发部署」。
+- **生成器检测**：`_gen*.py`/`generate*.py`/`build.py`/`make*.py`，entry 目录内优先、短路径优先；`?force=1` 跳过检查（产物已最新时）。
+- **新增端点**：`GET /:id/storage-files`（存储驱动权威文件列表——files 表不完整，项目 30 表空、项目 1 表 1 条但 blob 41 条）。
+- **前端**：Dashboard/PlanReview 展示 regenerate 提示条 + 复制命令按钮 + 「仍要部署现有产物」（force）按钮，不误报部署成功。
+- **本地验证 5 条路径全过**：① 部署自动检测执行生成器（index.html 重新生成）；② 改配置重部署产物随配置更新；③ CLI 全链路；④ apply 后自动重生成并部署；⑤ force 跳过 + 生成器执行失败返回 409。
+- **线上验证（2026-08-18，commit 70181d2 + a5b316a + 2cf77a3）**：部署 protobuddy-app 5 次全成功（最新 deployment `dpm3i8q2b3sn`，前端 `index-CSuTloga.js`）。blob 模式两条分支实测通过：普通 deploy → `regenerateRequired:true + generator:phase-2/_gen_pages.py` 不误部署；`?force=1` → 正常部署。修复 hint 域名坑：EdgeOne 重写 `host` 为内部 SCF host、无 x-forwarded-* 头，公共域名在 **`eo-pages-host`** 头（临时 `_debug/headers` 端点实测后已移除）。**CLI 完整链路线上实测通过**（用户确认后）：握手 → owner 验证 → 拉取 41 文件 → 执行生成器（重写 22 个 HTML）→ diff 回写 2 文件 → 自动 force 部署 v26 → shop-demo 验证内容一致 ✓。CLI 修复 4 个 bug：平台授权握手（manual redirect 拿 302 cookie）、URL 拼接打错路径、生成后部署死循环（自动 force）、前端命令带 eo_token（location.search）。
+- **方案 A 全链路闭环达成**：local 模式（后端自动执行）+ blob 模式信号（regenerateRequired）+ blob 模式外部执行（CLI）三条路径全部线上/本地验证完毕。
+
 ## 运行方式
 - 开发模式: 后端(3001) + 前端dev(5173)，Vite代理API
 - 生产模式: `cd frontend && npm run build` → `cd backend && npm start`（单服务器）
