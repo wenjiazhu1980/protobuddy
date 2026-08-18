@@ -126,3 +126,10 @@
 - EdgeOne Makers API Token（部署到EdgeOne，否则本地托管）
 - Makers Models API Key（Agent调用大模型，否则规则引擎兜底）
 - 均可在「设置」页按项目填写
+
+## 迭代 23：新项目 protobuddy（overseas）部署 + 自定义域名接入
+- 用户需求：部署到新 EdgeOne Makers 项目 + 自定义域名 protobuddy.20140107.xyz。
+- 关键决策：**overseas 区域**（全球可用区·不含中国大陆）——CLI `-a global` 含大陆须备案，域名无备案；overseas 无需备案。实测 global 直连 401 vs overseas 直连 200。
+- 已完成：新项目 protobuddy（makers-wfiun1slfauu，overseas，部署 dpdiwt4yrd4n）健康验证全过；DeletePagesProject API 可用（已清理误建的 global 空项目）。
+- 待用户：控制台添加自定义域名 → 弹窗取 TXT/CNAME → Cloudflare 加记录 → 自动签 SSL。CLI/API 无域名绑定 Action，只能控制台。
+- 后续部署命令需带 `-a overseas`。新项目为空库，旧数据在 protobuddy-app，迁移可选。
