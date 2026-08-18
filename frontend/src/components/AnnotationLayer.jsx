@@ -17,7 +17,7 @@ const FILTERS = [
  * AnnotationLayer - panel showing all annotations for the current version.
  * Supports marking annotations as resolved (已解决) or rejected (不采纳).
  */
-export default function AnnotationLayer({ annotations, onResolve, onReject, onReopen, onDelete, onGeneratePlan, activeId, onActive, generating }) {
+export default function AnnotationLayer({ annotations, onResolve, onReject, onReopen, onDelete, onGeneratePlan, activeId, onActive, generating, isOpen = true, onToggle }) {
   const [filter, setFilter] = useState('all');
 
   const countBy = (s) => annotations.filter(a => a.status === s).length;
@@ -30,10 +30,58 @@ export default function AnnotationLayer({ annotations, onResolve, onReject, onRe
     return a.status === filter;
   });
 
+  if (!isOpen) {
+    return (
+      <div className="annotation-panel annotation-panel-collapsed" title="展开批注列表">
+        <button
+          className="annotation-panel-toggle"
+          onClick={() => onToggle?.()}
+          aria-label="展开批注列表"
+          title="展开批注列表"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+        <div className="annotation-panel-collapsed-title">批注列表</div>
+        <div className="annotation-panel-collapsed-counts">
+          {openCount > 0 && <span className="badge badge-orange" title={`待处理 ${openCount}`}>{openCount}</span>}
+          {resolvedCount > 0 && <span className="badge badge-green" title={`已解决 ${resolvedCount}`}>{resolvedCount}</span>}
+          {rejectedCount > 0 && <span className="badge badge-gray" title={`不采纳 ${rejectedCount}`}>{rejectedCount}</span>}
+          {annotations.length === 0 && <span className="badge badge-gray">0</span>}
+        </div>
+        {openCount > 0 && (
+          <button
+            className="annotation-panel-toggle-generate"
+            onClick={() => onGeneratePlan?.()}
+            disabled={generating}
+            title="生成修改方案"
+            aria-label="生成修改方案"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2a10 10 0 1 0 10 10H12V2z" />
+              <path d="M12 2a10 10 0 0 1 10 10" />
+            </svg>
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="annotation-panel">
       <div className="annotation-panel-header">
         <span>批注列表</span>
+        <button
+          className="annotation-panel-toggle"
+          onClick={() => onToggle?.()}
+          aria-label="收起批注列表"
+          title="收起批注列表"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
       </div>
 
       {/* Status filters */}

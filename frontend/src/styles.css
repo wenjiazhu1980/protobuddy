@@ -402,6 +402,86 @@ button {
   align-items: center;
 }
 
+.annotation-panel-toggle {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  color: var(--text-light);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.annotation-panel-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--text-light);
+}
+.annotation-panel-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.annotation-panel-collapsed {
+  width: 44px;
+  align-items: center;
+  padding: 8px 0;
+  gap: 12px;
+  overflow: hidden;
+  cursor: default;
+  user-select: none;
+}
+.annotation-panel-collapsed .annotation-panel-toggle {
+  margin-bottom: 4px;
+}
+
+.annotation-panel-collapsed-title {
+  writing-mode: vertical-rl;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-light);
+  letter-spacing: 2px;
+}
+
+.annotation-panel-collapsed-counts {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.annotation-panel-collapsed-counts .badge {
+  min-width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.annotation-panel-toggle-generate {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--primary);
+  color: white;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+  margin-top: auto;
+}
+.annotation-panel-toggle-generate:hover { background: var(--primary-dark); transform: scale(1.05); }
+.annotation-panel-toggle-generate:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.annotation-panel-toggle-generate svg { width: 14px; height: 14px; }
+
 .annotation-filters {
   display: flex;
   gap: 4px;

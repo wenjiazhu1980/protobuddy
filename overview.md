@@ -133,3 +133,8 @@
 - 已完成：新项目 protobuddy（makers-wfiun1slfauu，overseas，部署 dpdiwt4yrd4n）健康验证全过；DeletePagesProject API 可用（已清理误建的 global 空项目）。
 - 待用户：控制台添加自定义域名 → 弹窗取 TXT/CNAME → Cloudflare 加记录 → 自动签 SSL。CLI/API 无域名绑定 Action，只能控制台。
 - 后续部署命令需带 `-a overseas`。新项目为空库，旧数据在 protobuddy-app，迁移可选。
+
+## 迭代 24：评审页批注列表面板可收起/展开
+- 用户需求：右侧「批注列表」支持类似 Figma 的手动关闭/展开，优化预览区空间。
+- 实现：Review.jsx 增加 panelOpen 状态并持久化到 localStorage；review-layout 动态 grid 宽度（320px ↔ 44px）+ 过渡动画。AnnotationLayer 新增 isOpen/onToggle，收起态渲染窄边栏（展开按钮、垂直标题「批注列表」、状态计数徽章、生成方案快捷按钮）。
+- 部署：protobuddy（overseas, deployment dprr6h4w9h7v）已上线；protobuddy.20140107.xyz 与 protobuddy.edgeone.dev 均加载新 bundle `index-CUZtZkvm.js`。

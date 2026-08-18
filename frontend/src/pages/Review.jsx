@@ -16,6 +16,13 @@ export default function Review() {
   const [latestPlan, setLatestPlan] = useState(null);
   const [currentPage, setCurrentPage] = useState('index.html');
   const [toast, setToast] = useState(null);
+  const [panelOpen, setPanelOpen] = useState(() => {
+    try { return localStorage.getItem('protobuddy.review.panel.open') !== 'false'; } catch { return true; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem('protobuddy.review.panel.open', String(panelOpen)); } catch {}
+  }, [panelOpen]);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -142,7 +149,13 @@ export default function Review() {
       </div>
 
       {/* Review layout */}
-      <div className="review-layout">
+      <div
+        className="review-layout"
+        style={{
+          gridTemplateColumns: panelOpen ? '1fr 320px' : '1fr 44px',
+          transition: 'grid-template-columns 0.25s ease'
+        }}
+      >
         {/* Preview with annotation overlay */}
         <div className="preview-container">
           <div className="preview-toolbar">
@@ -212,6 +225,8 @@ export default function Review() {
           activeId={activeAnnotationId}
           onActive={(ann) => setActiveAnnotationId(ann.id === activeAnnotationId ? null : ann.id)}
           generating={generating}
+          isOpen={panelOpen}
+          onToggle={() => setPanelOpen(o => !o)}
         />
       </div>
 
