@@ -20,14 +20,22 @@ export default function Settings() {
   });
   const [toast, setToast] = useState(null);
 
-  const MAKERS_MODELS = [
-    { id: '@makers/hy3', label: '@makers/hy3 · 腾讯混元 3.0（默认·快）' },
-    { id: '@makers/hy3-preview', label: '@makers/hy3-preview · 混元 3.0 预览（快）' },
-    { id: '@makers/deepseek-v4-flash', label: '@makers/deepseek-v4-flash · DeepSeek V4 Flash（推理·快）' },
-    { id: '@makers/deepseek-v4-pro', label: '@makers/deepseek-v4-pro · DeepSeek V4 Pro（推理·质量高）' },
-    { id: '@makers/minimax-m3', label: '@makers/minimax-m3 · MiniMax M3（推理）' },
-    { id: '@makers/minimax-m2.7', label: '@makers/minimax-m2.7 · MiniMax M2.7（推理）' },
-    { id: '@makers/kimi-k2.6', label: '@makers/kimi-k2.6 · Kimi K2.6（推理·慢）' }
+  // Built-in models: free, no vendor key binding required.
+  const MAKERS_BUILTIN_MODELS = [
+    { id: '@makers/hy3', label: '腾讯混元 3.0（默认·快）' },
+    { id: '@makers/hy3-preview', label: '混元 3.0 预览（快）' },
+    { id: '@makers/deepseek-v4-flash', label: 'DeepSeek V4 Flash（推理·快）' },
+    { id: '@makers/deepseek-v4-pro', label: 'DeepSeek V4 Pro（推理·质量高）' },
+    { id: '@makers/minimax-m3', label: 'MiniMax M3（推理）' },
+    { id: '@makers/minimax-m2.7', label: 'MiniMax M2.7（推理）' },
+    { id: '@makers/kimi-k2.6', label: 'Kimi K2.6（推理·慢）' }
+  ];
+
+  // Vendor models: require binding the vendor's own API key in the Makers console.
+  // Same gateway endpoint & auth, just a different model id prefix (vendor/name).
+  const VENDOR_MODELS = [
+    { id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash（厂商·推理·快）' },
+    { id: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro（厂商·推理·质量高）' }
   ];
 
   const showToast = (msg, type = 'success') => {
@@ -152,18 +160,25 @@ export default function Settings() {
             </div>
           </div>
           <div className="form-group">
-            <label className="form-label">Makers 内置模型</label>
+            <label className="form-label">AI 模型</label>
             <select
               className="form-input"
               value={form.makers_model}
               onChange={e => setForm({ ...form, makers_model: e.target.value })}
             >
-              {MAKERS_MODELS.map(m => (
-                <option key={m.id} value={m.id}>{m.label}</option>
-              ))}
+              <optgroup label="Makers 内置模型（免费额度）">
+                {MAKERS_BUILTIN_MODELS.map(m => (
+                  <option key={m.id} value={m.id}>{m.id} · {m.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label="厂商模型（需绑定厂商密钥）">
+                {VENDOR_MODELS.map(m => (
+                  <option key={m.id} value={m.id}>{m.id} · {m.label}</option>
+                ))}
+              </optgroup>
             </select>
             <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
-              用于生成修改方案的内置模型（免绑定厂商密钥即可调用）。可在 Makers 控制台 Models 页查看免费额度。
+              内置模型（@makers/* 前缀）免绑定即可调用；厂商模型（如 deepseek/* 前缀）需先在 Makers 控制台「模型与密钥」页面绑定对应厂商的 API Key。
             </div>
           </div>
           <div style={{ marginTop: 16, padding: 12, background: 'var(--primary-light)', borderRadius: 6, fontSize: 12, color: 'var(--primary-dark)' }}>

@@ -174,3 +174,13 @@
   - `PlanReview.jsx`：摘要卡评分卡横幅（大分数块 + 等级文案 + 5 维度进度条，红/黄/绿配色）；方案列表按钮显示分数徽章（needs_review 带 ⚠）。
 - 验证：单测三场景（高质量 100 / 低质量 28 需审查 / 中等 60 需审查）；本地 e2e 规则引擎路径 scorecard 100/good 完整落库。
 - 部署：protobuddy（overseas, deployment dp0k2bg5ruhx），两域名均加载 `index-Bf1A08Dp.js`。git 2e98eb4。
+
+## 迭代 29：生成器双写——跳过外部 Python 重新生成
+- 需求：apply 改了 `_gen_pages.py` 时，线上 blob 环境无法执行 Python，此前必须本机跑 `regenerate.js`。让模型同时改 `.py` 和 `.html`，部署时 HTML 已是最新，跳过外部执行。
+- 实现（4 文件）：
+  - `generator.js` `prepareForDeploy`：接收 `changes` 参数，blob 模式下三路分类——① 未碰 `.py` → `skipped` 直接部署；② 碰了 `.py` 且碰了 `.html` → `synced` 直接部署（双写）；③ 只碰 `.py` → `needsExternal`（兜底，仍需 `regenerate.js`）。
+  - `plans.js` `triggerRedeploy`：接收 `changes`，抽 `doDeploy()` 闭包由 `synced`/`skipped`/无生成器共用；apply 端点传入已批准 changes，响应体带 `dualWriteSynced`。
+  - `makersModels.js` systemPrompt：新增 GENERATOR DUAL-WRITE 规则——生成器场景必须成对产出 `.py`（源代码一致性）+ `.html`（部署用产物），description 互相引用。
+  - `PlanReview.jsx`：change 头部 `.py` + `.html` 成对时显示「双写」/「双写·产物」徽章；apply 成功 toast 报告同步 HTML 数量。
+- 验证：单测五场景全对（只改.py→needsExternal / 双写→synced / 只改.html→skipped / 改.css→skipped / 改.py+改.css→needsExternal）；本地 e2e local 模式 apply 不回归（ran:true 路径正常）。
+- 部署：protobuddy（overseas, deployment dpflteq5zhug），两域名均加载 `index-CVq5vXMN.js`。git 0373257。

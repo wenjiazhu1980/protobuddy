@@ -1,19 +1,26 @@
 /**
  * Makers Models proxy service.
- * Calls Makers Models (@makers/* built-in models) via the official AI Gateway,
+ * Calls Makers Models via the official AI Gateway,
  * OpenAI-compatible chat completions API.
  * Falls back to rule-based plan generation if API is unavailable.
  *
  * Official endpoint: https://ai-gateway.edgeone.link/v1/chat/completions
  *   Authorization: Bearer <MAKERS_MODELS_KEY>
- *   model: "@makers/hy3" | "@makers/hy3-preview" | "@makers/deepseek-v4-pro"
- *          | "@makers/deepseek-v4-flash" | "@makers/minimax-m3" | ...
+ *
+ * Two model categories, same endpoint & auth:
+ *   1. Built-in models (@makers/* prefix) — free quota, no vendor key needed.
+ *      e.g. @makers/hy3, @makers/deepseek-v4-flash, @makers/kimi-k2.6
+ *   2. Vendor models (vendor/name format) — requires binding the vendor's
+ *      own API key in the Makers console → Models & Keys page.
+ *      e.g. deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro
  *
  * Security: API key is never sent to frontend. All calls go through backend.
  */
 
 const MAKERS_MODELS_ENDPOINT = 'https://ai-gateway.edgeone.link/v1/chat/completions';
 // Default built-in model (Hunyuan 3.0). Can be overridden via project.makers_model.
+// Vendor models (e.g. deepseek/deepseek-v4-pro) use the same endpoint, just a
+// different model id — the user must bind the vendor API key in the Makers console.
 const DEFAULT_MODEL = '@makers/hy3';
 
 /**
