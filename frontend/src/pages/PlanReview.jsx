@@ -104,6 +104,11 @@ export default function PlanReview() {
         setRegenerateBanner(result.regenerateRequired);
         showToast(`修改已应用（${result.appliedCount} 条），需执行生成器重新生成 HTML 后再部署`, 'error');
         load();
+      } else if (result.dualWriteSynced) {
+        // 双写：模型同时改了 .py 和 HTML 产物，平台检测到后跳过外部执行直接部署。
+        showToast(`成功应用 ${result.appliedCount} 条修改，生成器与 HTML 产物已同步（${result.dualWriteSynced.htmlFiles?.length || 0} 个 HTML），直接部署`, 'success');
+        load();
+        navigate(`/project/${id}`);
       } else if (result.success) {
         showToast(`成功应用 ${result.appliedCount} 条修改，原型已重新部署`);
         load();
@@ -421,6 +426,12 @@ export default function PlanReview() {
                     {validationBadge(change.validation)}
                     {change.annotation_id && (
                       <span className="badge badge-gray" title="该修改针对的批注">批注 #{change.annotation_id}</span>
+                    )}
+                    {/\.py$/i.test(change.file_path) && (selectedPlan.changes || []).some(c => c.id !== change.id && /\.html?$/i.test(c.file_path)) && (
+                      <span className="badge badge-blue" title="生成器脚本与 HTML 产物成对修改，部署时跳过外部执行">双写</span>
+                    )}
+                    {/\.html?$/i.test(change.file_path) && (selectedPlan.changes || []).some(c => c.id !== change.id && /\.py$/i.test(c.file_path)) && (
+                      <span className="badge badge-blue" title="HTML 产物，与生成器脚本成对修改">双写·产物</span>
                     )}
                     <span style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{change.file_path}</span>
                   </div>

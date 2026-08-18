@@ -12,37 +12,32 @@ const router = Router();
 // Redeploy a project after files changed (apply or rollback). Shared so both
 // paths get identical semantics: generator handling (local run vs external
 // regenerateRequired vs force), deployment record, version bump.
-async function triggerRedeploy(plan, req, logLine) {
+async function triggerRedeploy(plan, req, logLine, changes = []) {
   let deployResult = null;
   let deployError = '';
   let regenerateRequired = null;
+  let dualWriteSynced = null;
   const project = await getById('projects', plan.project_id);
-  if (!project) return { deployResult, deployError, regenerateRequired };
+  if (!project) return { deployResult, deployError, regenerateRequired, dualWriteSynced };
   try {
     // Option A: before redeploying, check for a Python generator. The change
     // may have touched the generator script (e.g. phase-2/_gen_pages.py), in
     // which case HTML must be regenerated first.
     // - local mode: run the generator automatically, then deploy (full loop)
-    // - blob mode: Python cannot run on the platform -> skip deploy, return
-    //   regenerateRequired so the external CLI (scripts/regenerate.js) does it
+    // - blob mode: Python cannot run on the platform
+    //   * dual-write: if the apply also touched HTML outputs, the model
+    //     already produced the newest HTML → deploy directly, skip external
+    //     regenerate
+    //   * otherwise: return regenerateRequired so the external CLI does it
     // - ?force=1: skip the generator check and deploy existing artifacts
-    const gen = await prepareForDeploy(plan.project_id, { force: req.query.force === '1' });
-    if (gen.generator && gen.needsExternal) {
-      regenerateRequired = {
-        script: gen.generator.script,
-        message: gen.message,
-        hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${apiBaseFromReq(req)}`
-      };
-    } else if (gen.generator && gen.ran && !gen.ok) {
-      deployError = `生成器执行失败，未重新部署: ${gen.error}${gen.stderr ? `\n${gen.stderr}` : ''}`;
-    } else {
+    const gen = await prepareForDeploy(plan.project_id, { force: req.query.force === '1', changes });
+    const doDeploy = async () => {
       deployResult = await deployToEdgeOne(project);
       let previewUrl = deployResult.url;
       if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
         const baseUrl = `${req.protocol}://${req.get('host')}`;
         previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
       }
-
       const version = (project.version || 0) + 1;
       await insert('deployments', {
         project_id: plan.project_id,
@@ -53,21 +48,34 @@ async function triggerRedeploy(plan, req, logLine) {
         method: deployResult.method,
         log: `${logLine} ${deployResult.log || ''}`
       });
-
       await update('projects', plan.project_id, {
         current_url: previewUrl,
         version,
         status: 'deployed'
       });
-
       if (!deployResult.success) {
         deployError = `重新部署失败: ${deployResult.error || 'unknown error'}`;
       }
+    };
+    if (gen.generator && gen.synced) {
+      console.log(`[plans] Dual-write: ${gen.syncedHtmlFiles.length} HTML synced with ${gen.generator.script}, deploying directly (skip external regenerate)`);
+      dualWriteSynced = { script: gen.generator.script, htmlFiles: gen.syncedHtmlFiles };
+      await doDeploy();
+    } else if (gen.generator && gen.needsExternal) {
+      regenerateRequired = {
+        script: gen.generator.script,
+        message: gen.message,
+        hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${apiBaseFromReq(req)}`
+      };
+    } else if (gen.generator && gen.ran && !gen.ok) {
+      deployError = `生成器执行失败，未重新部署: ${gen.error}${gen.stderr ? `\n${gen.stderr}` : ''}`;
+    } else {
+      await doDeploy();
     }
   } catch (err) {
     deployError = `重新部署失败: ${err.message}`;
   }
-  return { deployResult, deployError, regenerateRequired };
+  return { deployResult, deployError, regenerateRequired, dualWriteSynced };
 }
 
 // Generate a plan from open annotations
@@ -596,9 +604,10 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
   let deployResult = null;
   let deployError = '';
   let regenerateRequired = null;
+  let dualWriteSynced = null;
   if (appliedChanges.length > 0) {
-    ({ deployResult, deployError, regenerateRequired } = await triggerRedeploy(
-      plan, req, `Applied plan #${plan.id}: ${appliedChanges.length} changes.`
+    ({ deployResult, deployError, regenerateRequired, dualWriteSynced } = await triggerRedeploy(
+      plan, req, `Applied plan #${plan.id}: ${appliedChanges.length} changes.`, changes
     ));
   }
 
@@ -621,6 +630,7 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
     deployError: deployError || undefined,
     deploySkipped: !!regenerateRequired,
     regenerateRequired: regenerateRequired || undefined,
+    dualWriteSynced: dualWriteSynced || undefined,
     deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null,
     snapshot_id: snapshot ? snapshot.id : undefined
   };
@@ -689,7 +699,7 @@ router.post('/plans/:planId/rollback', requireOwnerAuth, async (req, res) => {
   console.log(`[plans] Rolled back plan #${plan.id} to snapshot #${snapshot.id} (${restored}/${snapshot.files.length} files, ${changed.length} changes reset)`);
 
   // Redeploy the restored content (same semantics as apply, incl. generator
-  // handling and ?force=1).
+  // handling and ?force=1). Rollback passes no changes → no dual-write path.
   const { deployResult, deployError, regenerateRequired } = await triggerRedeploy(
     plan, req, `Rolled back plan #${plan.id} to snapshot #${snapshot.id}.`
   );

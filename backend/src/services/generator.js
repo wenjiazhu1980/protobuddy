@@ -215,12 +215,37 @@ export async function runGeneratorLocal(projectId, script) {
  *   - blob 且 force:  {generator, forced:true}
  *   - local:          {generator, ran:true, ok, stdout, stderr, changedFiles} 或 {generator, ran:true, ok:false, error}
  */
-export async function prepareForDeploy(projectId, { force = false } = {}) {
+export async function prepareForDeploy(projectId, { force = false, changes = [] } = {}) {
   const generator = await detectGenerator(projectId);
   if (!generator) return { generator: null };
   if (force) return { generator, forced: true };
 
   if (isBlobMode()) {
+    // Generator handling on the read-only Cloud Function runtime:
+    //   1. apply didn't touch any generator script (.py) → no regeneration
+    //      needed, deploy whatever is in storage (HTML may have been edited
+    //      directly, or the change was to CSS/JS/etc).
+    //   2. apply touched the generator .py AND at least one HTML output →
+    //      dual-write: the model already produced the paired HTML artifact,
+    //      so the deployed HTML is the newest version — deploy directly,
+    //      skip external Python regeneration.
+    //   3. apply touched only the generator .py (no HTML) → must regenerate
+    //      externally; return needsExternal so scripts/regenerate.js does it.
+    const touched = new Set((changes || []).map(c => c.file_path).filter(Boolean));
+    const pyTouched = [...touched].some(p => isGeneratorFile(p));
+    if (!pyTouched) {
+      return { generator, skipped: true, message: `本次未修改生成器脚本 ${generator.script}，直接部署现有产物。` };
+    }
+    const htmlTouched = [...touched].some(p => /\.html?$/i.test(p));
+    if (htmlTouched) {
+      const syncedHtmlFiles = [...touched].filter(p => /\.html?$/i.test(p));
+      return {
+        generator,
+        synced: true,
+        syncedHtmlFiles,
+        message: `检测到生成器脚本 ${generator.script} 与 HTML 产物已同步修改（${syncedHtmlFiles.length} 个 HTML），直接部署最新产物。`
+      };
+    }
     return {
       generator,
       needsExternal: true,

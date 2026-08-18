@@ -166,3 +166,11 @@
   - 前端：摘要卡红色「↩ 回滚到应用前」按钮（确认警告 + 回滚中状态 + regenerate 横幅复用）；apply 失败 toast 指引回滚。
 - 验证（本地 e2e 全闭环）：apply（快照 #10030 创建、文件被修改、批注 resolved）→ rollback（restoredCount=1、changesReset=1、重新部署）→ 文件恢复原状、批注 open、plan/change 均 approved、rollback_available=false、二次回滚 400。
 - 部署：protobuddy（overseas, deployment dpl3olq6fo8m），两域名均加载 `index-D1AQEJKk.js`。git 9c6424f。
+
+## 迭代 28：方案质量评分卡（质量保障四项收尾）
+- 需求：综合路径合规/匹配质量/批注一致性/描述/明确性给方案打分，低于阈值标记「需重点审查」。
+- 实现（2 文件）：
+  - `plans.js`：生成流程末尾 `computeScorecard()`——纯本地加权评分 0-100（路径 20 / 匹配 30 / 一致性 25 / 描述 10 / 明确性 15），全部复用已算好的 validations/consistency/knownPaths，零额外 API 消耗；`needs_review = 分数<70 或 任一预检 error`；plan 记录新增 `scorecard{score, grade, needs_review, dimensions[]}`。
+  - `PlanReview.jsx`：摘要卡评分卡横幅（大分数块 + 等级文案 + 5 维度进度条，红/黄/绿配色）；方案列表按钮显示分数徽章（needs_review 带 ⚠）。
+- 验证：单测三场景（高质量 100 / 低质量 28 需审查 / 中等 60 需审查）；本地 e2e 规则引擎路径 scorecard 100/good 完整落库。
+- 部署：protobuddy（overseas, deployment dp0k2bg5ruhx），两域名均加载 `index-Bf1A08Dp.js`。git 2e98eb4。
