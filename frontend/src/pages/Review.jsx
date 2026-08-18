@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api.js';
 import PreviewFrame from '../components/PreviewFrame.jsx';
@@ -7,6 +7,7 @@ import AnnotationLayer from '../components/AnnotationLayer.jsx';
 export default function Review() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const previewRef = useRef(null);
   const [project, setProject] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   const [annotateMode, setAnnotateMode] = useState(false);
@@ -193,6 +194,7 @@ export default function Review() {
           </div>
           {hasPreview ? (
             <PreviewFrame
+              ref={previewRef}
               projectId={id}
               version={project.version}
               annotateMode={annotateMode}
@@ -224,6 +226,7 @@ export default function Review() {
           onGeneratePlan={handleGeneratePlan}
           activeId={activeAnnotationId}
           onActive={(ann) => setActiveAnnotationId(ann.id === activeAnnotationId ? null : ann.id)}
+          onPageTagClick={(page) => previewRef.current?.navigateTo(page)}
           generating={generating}
           isOpen={panelOpen}
           onToggle={() => setPanelOpen(o => !o)}

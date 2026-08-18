@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import { API_BASE } from '../api.js';
 
 /**
@@ -44,7 +44,7 @@ function normalizePage(p) {
  * {__protoNav}. This component tracks the current page so annotation pins are
  * filtered per page and new annotations record which page they belong to.
  */
-export default function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotations, activeAnnotationId, onAnnotationClick, onPageChange }) {
+function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotations, activeAnnotationId, onAnnotationClick, onPageChange }, ref) {
   const containerRef = useRef(null);
   const iframeRef = useRef(null);
   const probeRef = useRef({ nextId: 0, results: {} });
@@ -157,6 +157,26 @@ export default function PreviewFrame({ projectId, version, annotateMode, onAnnot
     const t = setTimeout(() => scheduleElementQuery(), 300);
     return () => clearTimeout(t);
   }, [currentPage, visibleAnnotationIds, scheduleElementQuery]);
+
+  // Expose imperative navigation so the annotation panel can jump to a page tag.
+  useImperativeHandle(ref, () => ({
+    navigateTo: (page) => {
+      const target = normalizePage(page);
+      const iframe = iframeRef.current;
+      if (!iframe) return;
+      const nextSrc = target === 'index.html'
+        ? previewUrl
+        : `${previewUrl}${encodeURIComponent(target)}`;
+      if (iframe.src !== nextSrc) {
+        iframe.src = nextSrc;
+        // Optimistically update currentPage; __protoNav will correct it once loaded.
+        setCurrentPage(target);
+        setScrollPos({ x: 0, y: 0 });
+        setElementPositions({});
+        onPageChange?.(target);
+      }
+    }
+  }), [previewUrl, onPageChange]);
 
   // Clean up timers and rAF on unmount
   useEffect(() => {
@@ -301,3 +321,5 @@ export default function PreviewFrame({ projectId, version, annotateMode, onAnnot
     </div>
   );
 }
+
+export default forwardRef(PreviewFrame);

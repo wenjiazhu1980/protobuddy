@@ -17,7 +17,7 @@ const FILTERS = [
  * AnnotationLayer - panel showing all annotations for the current version.
  * Supports marking annotations as resolved (已解决) or rejected (不采纳).
  */
-export default function AnnotationLayer({ annotations, onResolve, onReject, onReopen, onDelete, onGeneratePlan, activeId, onActive, generating, isOpen = true, onToggle }) {
+export default function AnnotationLayer({ annotations, onResolve, onReject, onReopen, onDelete, onGeneratePlan, activeId, onActive, onPageTagClick, generating, isOpen = true, onToggle }) {
   const [filter, setFilter] = useState('all');
 
   const countBy = (s) => annotations.filter(a => a.status === s).length;
@@ -131,12 +131,17 @@ export default function AnnotationLayer({ annotations, onResolve, onReject, onRe
                   {ann.author} · 位置 ({ann.x}%, {ann.y}%) · {new Date(ann.created_at).toLocaleString('zh-CN')}
                 </div>
                 {ann.page && ann.page !== 'index.html' && (
-                  <div className="annotation-item-page" title={ann.page}>
+                  <button
+                    type="button"
+                    className="annotation-item-page"
+                    title={`跳转到 ${ann.page}`}
+                    onClick={(e) => { e.stopPropagation(); onPageTagClick?.(ann.page); }}
+                  >
                     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" style={{ flexShrink: 0 }}>
                       <path d="M4 4h16v16H4z" /><path d="M9 2v4M15 2v4M9 12h6M9 16h4" />
                     </svg>
                     {ann.page.split('/').pop()}
-                  </div>
+                  </button>
                 )}
                 <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                   {ann.status === 'open' && (

@@ -548,6 +548,13 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+  transition: background 0.15s ease;
+}
+.annotation-item-page:hover {
+  background: #bfdbfe;
 }
 
 /* Plan review */
