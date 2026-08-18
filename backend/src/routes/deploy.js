@@ -99,6 +99,8 @@ router.post('/:id/deploy', requireOwnerAuth, async (req, res) => {
       deployment_id: deployment.id,
       error: result.error,
       log_file: result.logFile,
+      custom_domain_bound: result.customDomainBound,
+      custom_domain_status: result.customDomainStatus,
       generator: gen.generator ? {
         script: gen.generator.script,
         ran: !!gen.ran,
@@ -145,10 +147,17 @@ router.get('/:id/deploy-status', async (req, res) => {
       await update('projects', req.params.id, { status: 'deploy_failed' });
       return res.json({ status: 'failed', error: `EdgeOne 部署状态: ${check.status}`, method: deployment.method, deployment_id: deployment.id });
     }
-    const url = await getProjectUrl(token, makersProjectId);
+    const urlResult = await getProjectUrl(token, makersProjectId, {
+      preferredDomain: project.custom_domain || undefined
+    });
+    const url = urlResult.url;
     await update('deployments', deployment.id, { status: 'success', url, log: `EdgeOne deploy success: ${url}` });
     await update('projects', req.params.id, { current_url: url, deploy_method: 'edgeone', status: 'deployed' });
-    return res.json({ status: 'success', url, method: 'edgeone', deployment_id: deployment.id });
+    return res.json({
+      status: 'success', url, method: 'edgeone', deployment_id: deployment.id,
+      customDomainBound: urlResult.customDomainBound,
+      customDomainStatus: urlResult.customDomainStatus
+    });
   } catch (err) {
     return res.json({ status: 'deploying', method: deployment.method, deployment_id: deployment.id, error: err.message });
   }

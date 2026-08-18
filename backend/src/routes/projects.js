@@ -33,7 +33,7 @@ router.get('/:id', async (req, res) => {
 
 // Create project
 router.post('/', async (req, res) => {
-  const { name, slug, edgeone_project_name, edgeone_token, makers_key, description } = req.body;
+  const { name, slug, edgeone_project_name, edgeone_token, makers_key, description, custom_domain } = req.body;
   if (!name) return res.status(400).json({ error: 'Project name is required' });
 
   const projectSlug = slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || `proj-${Date.now()}`;
@@ -45,6 +45,7 @@ router.post('/', async (req, res) => {
     edgeone_token: edgeone_token || '',
     makers_key: makers_key || '',
     description: description || '',
+    custom_domain: custom_domain || '',
     current_url: '',
     deploy_method: '',
     status: 'created',
@@ -66,7 +67,7 @@ router.put('/:id', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  const { name, edgeone_project_name, edgeone_token, makers_key, description, makers_model } = req.body;
+  const { name, edgeone_project_name, edgeone_token, makers_key, description, makers_model, custom_domain } = req.body;
   const patch = {};
   if (name !== undefined) patch.name = name;
   if (edgeone_project_name !== undefined) patch.edgeone_project_name = edgeone_project_name;
@@ -74,6 +75,7 @@ router.put('/:id', requireOwnerAuth, async (req, res) => {
   if (makers_key !== undefined) patch.makers_key = makers_key;
   if (description !== undefined) patch.description = description;
   if (makers_model !== undefined) patch.makers_model = makers_model;
+  if (custom_domain !== undefined) patch.custom_domain = custom_domain;
 
   const updated = await update('projects', req.params.id, patch);
   res.json({

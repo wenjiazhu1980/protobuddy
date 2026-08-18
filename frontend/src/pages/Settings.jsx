@@ -16,7 +16,8 @@ export default function Settings() {
     edgeone_project_name: '',
     edgeone_token: '',
     makers_key: '',
-    makers_model: '@makers/hy3'
+    makers_model: '@makers/hy3',
+    custom_domain: ''
   });
   const [toast, setToast] = useState(null);
 
@@ -52,7 +53,8 @@ export default function Settings() {
         edgeone_project_name: p.edgeone_project_name || '',
         edgeone_token: '',  // Don't pre-fill sensitive keys
         makers_key: '',
-        makers_model: p.makers_model || '@makers/hy3'
+        makers_model: p.makers_model || '@makers/hy3',
+        custom_domain: p.custom_domain || ''
       });
       setLoading(false);
     }).catch(err => {
@@ -68,7 +70,8 @@ export default function Settings() {
         name: form.name,
         description: form.description,
         edgeone_project_name: form.edgeone_project_name,
-        makers_model: form.makers_model
+        makers_model: form.makers_model,
+        custom_domain: form.custom_domain.trim().replace(/^https?:\/\//, '').replace(/\/$/, '')
       };
       // Only update keys if user entered new values
       if (form.edgeone_token) patch.edgeone_token = form.edgeone_token;
@@ -117,6 +120,20 @@ export default function Settings() {
           <div className="form-group">
             <label className="form-label">EdgeOne 项目名</label>
             <input className="form-input" value={form.edgeone_project_name} onChange={e => setForm({ ...form, edgeone_project_name: e.target.value })} placeholder="EdgeOne Makers 上的项目标识" />
+          </div>
+          <div className="form-group">
+            <label className="form-label">自定义域名（可选）</label>
+            <input
+              className="form-input"
+              value={form.custom_domain}
+              onChange={e => setForm({ ...form, custom_domain: e.target.value })}
+              placeholder="如 cis2.20140107.xyz"
+            />
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+              部署后优先使用此域名作为原型访问地址。需先在 EdgeOne Makers 控制台绑定该域名并完成 DNS 验证：
+              进入项目详情 → 域名管理 → 添加自定义域名 → 添加 CNAME 记录。
+              绑定验证通过后，部署 URL 将自动切换为自定义域名。
+            </div>
           </div>
         </div>
       </div>

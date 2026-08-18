@@ -247,25 +247,60 @@ export async function checkDeployment({ token, projectId, deploymentId }) {
 
 /**
  * Resolve the public URL of a finished deployment (mirrors the CLI):
- * custom domain > preset domain (IsTld=1, no token) > preset domain + eo_token.
+ * preferred custom domain > any custom domain (Pass) > preset domain (IsTld=1, no token) > preset domain + eo_token.
+ *
+ * @param {string} token Makers API token
+ * @param {string} projectId EdgeOne Pages project ID
+ * @param {object} [opts]
+ * @param {string} [opts.preferredDomain] - User-configured custom domain to prioritise
+ * @returns {Promise<{url:string, customDomainBound?:boolean, customDomainStatus?:string}>}
  */
-export async function getProjectUrl(token, projectId) {
+export async function getProjectUrl(token, projectId, opts = {}) {
   const res = await callApi(token, 'DescribePagesProjects', {
     Filters: [{ Name: 'ProjectId', Values: [projectId] }], Offset: 0, Limit: 10, OrderBy: 'CreatedOn'
   });
   const proj = (res.Data?.Response?.Projects || [])[0];
   if (!proj) throw new Error('Failed to describe project after deploy');
 
-  const custom = (proj.CustomDomains || []).find(d => d.Status === 'Pass');
-  if (custom) return `https://${custom.Domain}`;
+  const allCustom = proj.CustomDomains || [];
+
+  // 1. If user configured a preferred domain, try to match it first
+  if (opts.preferredDomain) {
+    const norm = opts.preferredDomain.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase();
+    const matched = allCustom.find(d =>
+      (d.Domain || '').toLowerCase() === norm && d.Status === 'Pass'
+    );
+    if (matched) return { url: `https://${matched.Domain}`, customDomainBound: true };
+
+    // Domain configured but not yet Pass — report status so frontend can show guidance
+    const pending = allCustom.find(d => (d.Domain || '').toLowerCase() === norm);
+    if (pending) {
+      // Fall through to other domains / preset, but include status info
+      const fallback = await resolvePresetOrAnyCustom(token, proj, allCustom);
+      return { ...fallback, customDomainBound: false, customDomainStatus: pending.Status };
+    }
+    // Domain not found in EdgeOne at all — user hasn't bound it yet
+    const fallback = await resolvePresetOrAnyCustom(token, proj, allCustom);
+    return { ...fallback, customDomainBound: false, customDomainStatus: 'not_bound' };
+  }
+
+  // 2. No preferred domain — use any Pass custom domain, then preset
+  const fallback = await resolvePresetOrAnyCustom(token, proj, allCustom);
+  return fallback;
+}
+
+/** Resolve URL from any Pass custom domain or preset domain (extracted helper). */
+async function resolvePresetOrAnyCustom(token, proj, allCustom) {
+  const anyPass = allCustom.find(d => d.Status === 'Pass');
+  if (anyPass) return { url: `https://${anyPass.Domain}` };
 
   const domain = proj.PresetDomain;
   if (!domain) throw new Error('Project has no PresetDomain');
 
-  if (proj.IsTld === 1) return `https://${domain}`;
+  if (proj.IsTld === 1) return { url: `https://${domain}` };
 
   const enc = await callApi(token, 'DescribePagesEncipherToken', { Text: domain });
   const { Token, Timestamp } = enc.Data?.Response || {};
   if (!Token || !Timestamp) throw new Error('DescribePagesEncipherToken returned no token');
-  return `https://${domain}?eo_token=${Token}&eo_time=${Timestamp}`;
+  return { url: `https://${domain}?eo_token=${Token}&eo_time=${Timestamp}` };
 }

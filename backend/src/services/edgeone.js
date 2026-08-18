@@ -99,9 +99,17 @@ export async function deployToEdgeOne(project) {
         throw new Error(`EdgeOne deployment ended with status: ${polled.status}`);
       }
 
-      const url = await getProjectUrl(project.edgeone_token, projectId);
+      const urlResult = await getProjectUrl(project.edgeone_token, projectId, {
+        preferredDomain: project.custom_domain || undefined
+      });
+      const url = urlResult.url;
       console.log(`[edgeone] Deploy success: ${url}`);
-      return { success: true, url, method: 'edgeone', projectId, deploymentId, log: `Deployed ${files.length} files. ${url}` };
+      return {
+        success: true, url, method: 'edgeone', projectId, deploymentId,
+        log: `Deployed ${files.length} files. ${url}`,
+        customDomainBound: urlResult.customDomainBound,
+        customDomainStatus: urlResult.customDomainStatus
+      };
     } catch (err) {
       console.warn(`[edgeone] Pages API deploy failed: ${err.message}. Falling back to function preview.`);
       return {

@@ -113,7 +113,7 @@ export default function Dashboard() {
         while (Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 5000));
           const st = await api.deployStatus(id, result.deployment_id);
-          if (st.status === 'success') { result = { ...result, success: true, url: st.url, method: 'edgeone' }; break; }
+          if (st.status === 'success') { result = { ...result, success: true, url: st.url, method: 'edgeone', custom_domain_bound: st.customDomainBound, custom_domain_status: st.customDomainStatus }; break; }
           if (st.status === 'failed') { result = { ...result, success: false, error: st.error || 'EdgeOne 部署失败' }; break; }
         }
         if (result.method === 'edgeone_deploying' && result.url === '') {
@@ -137,7 +137,13 @@ export default function Dashboard() {
         setRegenerateInfo(result);
         showToast('检测到 Python 生成器：需先重新生成 HTML 再部署', 'error');
       } else if (result.success) {
-        showToast(`部署成功 (${result.method === 'edgeone' ? 'EdgeOne' : result.method === 'edgeone_manual' ? 'EdgeOne（手动）' : result.method === 'cloud_preview' ? 'EdgeOne 全栈' : '本地托管'} v${result.version})`);
+        let msg = `部署成功 (${result.method === 'edgeone' ? 'EdgeOne' : result.method === 'edgeone_manual' ? 'EdgeOne（手动）' : result.method === 'cloud_preview' ? 'EdgeOne 全栈' : '本地托管'} v${result.version})`;
+        if (result.custom_domain_status === 'not_bound') {
+          msg += ' · 自定义域名尚未绑定，请前往 EdgeOne 控制台绑定';
+        } else if (result.custom_domain_status && result.custom_domain_status !== 'Pass' && !result.custom_domain_bound) {
+          msg += ` · 自定义域名验证中 (${result.custom_domain_status})`;
+        }
+        showToast(msg);
       } else {
         showToast('部署失败: ' + (result.error || '未知错误'), 'error');
       }
