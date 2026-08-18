@@ -34,10 +34,29 @@ const DEFAULT_MODEL = '@makers/hy3';
  *   Injected into the system prompt so the model follows project-specific rules.
  * @returns {Promise<{success: boolean, plan?: object, error?: string, method: string}>}
  */
-export async function generatePlanWithMakers(apiKey, annotations, files, model = DEFAULT_MODEL, agentsRules = '', retryFeedback = '') {
+export async function generatePlanWithMakers(apiKey, annotations, files, model = DEFAULT_MODEL, agentsRules = '', retryFeedback = '', fnStartTime = Date.now()) {
   if (!apiKey) {
     console.log('[makersModels] No API key provided, using rule-based fallback');
     return generateRuleBasedPlan(annotations, files);
+  }
+
+  // Dynamic timeout: Cloud Functions have a 120s hard platform limit.
+  // By the time we reach here, file I/O + prompt building has already
+  // consumed part of the budget. Calculate remaining time and set the
+  // fetch deadline so the catch block has time to run the rule-based
+  // fallback BEFORE the platform kills the function.
+  const CF_HARD_LIMIT_MS = 120000;
+  const FALLBACK_BUFFER_MS = 15000; // reserve 15s for fallback generation + JSON response
+  const elapsedAtEntry = Date.now() - fnStartTime;
+  const remainingBudget = CF_HARD_LIMIT_MS - elapsedAtEntry;
+  const minBudgetNeeded = 20000; // need at least 20s to bother calling the API
+
+  if (remainingBudget < minBudgetNeeded) {
+    console.warn(`[makersModels] Only ${Math.round(remainingBudget / 1000)}s budget left (elapsed ${Math.round(elapsedAtEntry / 1000)}s), skipping API call → rule-based fallback`);
+    const fb = generateRuleBasedPlan(annotations, files);
+    fb.fallbackReason = `Insufficient time budget (${Math.round(remainingBudget / 1000)}s left) for API call`;
+    fb.method = 'rule-based';
+    return fb;
   }
 
   try {
@@ -181,10 +200,15 @@ Generate a modification plan in JSON format.`;
       payload.temperature = 0.3;
     }
 
-    // Cloud Functions have a 120s hard timeout (edgeone.json maxDuration: 120).
-    // Leave 10s buffer for other processing (reading files, parsing JSON, etc.)
-    // so the fetch itself doesn't exceed the platform limit and cause a 504.
-    const fetchTimeoutMs = isReasoningModel ? 105000 : 50000;
+    // Dynamic fetch timeout based on remaining Cloud Function budget.
+    // We need: fetchTime + fallbackBuffer < remainingBudget
+    const elapsedBeforeFetch = Date.now() - fnStartTime;
+    const remainingForFetch = CF_HARD_LIMIT_MS - elapsedBeforeFetch - FALLBACK_BUFFER_MS;
+    const fetchTimeoutMs = isReasoningModel
+      ? Math.min(105000, Math.max(15000, remainingForFetch))
+      : Math.min(50000, Math.max(15000, remainingForFetch));
+
+    console.log(`[makersModels] Fetch timeout: ${Math.round(fetchTimeoutMs / 1000)}s (elapsed ${Math.round(elapsedBeforeFetch / 1000)}s, model=${model})`);
 
     let response;
     try {
@@ -201,9 +225,8 @@ Generate a modification plan in JSON format.`;
       const isTimeout = fetchErr.name === 'TimeoutError' || fetchErr.name === 'AbortError';
       if (isTimeout) {
         throw new Error(
-          `模型响应超时（${Math.round(fetchTimeoutMs / 1000)}s）。` +
-          `推理模型生成方案需要较长时间，已超过平台 Cloud Function 120s 上限。` +
-          `建议：① 减少批注数量后分批生成；② 换用更快的模型（如 @makers/hy3 或 @makers/deepseek-v4-flash）。`
+          `模型响应超时（${Math.round(fetchTimeoutMs / 1000)}s，已用 ${Math.round(elapsedBeforeFetch / 1000)}s）。` +
+          `推理模型生成方案需要较长时间。建议：① 减少批注数量后分批生成；② 换用更快的模型（如 @makers/hy3）。`
         );
       }
       throw fetchErr;
@@ -268,8 +291,11 @@ Generate a modification plan in JSON format.`;
 /**
  * Rule-based fallback plan generator.
  * Creates simple modification suggestions based on annotation content.
+ * Exported so callers (e.g. plans.js) can invoke it directly as a last-resort
+ * fallback when the Makers API path fails entirely (e.g. Cloud Function killed
+ * by platform timeout before the in-function catch can run).
  */
-function generateRuleBasedPlan(annotations, files) {
+export function generateRuleBasedPlan(annotations, files) {
   const changes = annotations.map(ann => {
     // Try to guess the file from the page or default to index.html
     const filePath = ann.page || 'index.html';

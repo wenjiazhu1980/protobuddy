@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getById, query, insert, update } from '../db.js';
-import { generatePlanWithMakers } from '../services/makersModels.js';
+import { generatePlanWithMakers, generateRuleBasedPlan } from '../services/makersModels.js';
 import { checkConsistency, buildConsistencyFeedback } from '../services/consistency.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
@@ -80,6 +80,10 @@ async function triggerRedeploy(plan, req, logLine, changes = []) {
 
 // Generate a plan from open annotations
 router.post('/:id/plan', async (req, res) => {
+  // Track total function time for dynamic timeout calculation.
+  // Cloud Functions have a 120s hard platform limit — all downstream
+  // API calls need to know how much budget is left.
+  const fnStartTime = Date.now();
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -237,18 +241,34 @@ router.post('/:id/plan', async (req, res) => {
     return { ...c, file_path: healed };
   });
 
-  // Generate plan
+  // Generate plan — wrapped in try/catch so that ANY failure (API timeout,
+  // JSON parse error, unexpected throw) falls back to rule-based generation
+  // instead of returning a bare 500 to the client.
   const genStartTime = Date.now();
-  let result = await generatePlanWithMakers(
-    project.makers_key,
-    annotations,
-    filesWithContent,
-    project.makers_model || undefined,
-    agentsRules
-  );
+  let result;
+  try {
+    result = await generatePlanWithMakers(
+      project.makers_key,
+      annotations,
+      filesWithContent,
+      project.makers_model || undefined,
+      agentsRules,
+      '',           // retryFeedback
+      fnStartTime   // pass function start time for dynamic timeout
+    );
+  } catch (genErr) {
+    console.warn(`[plans] Generation threw: ${genErr.message}. Falling back to rule-based plan.`);
+    result = generateRuleBasedPlan(annotations, filesWithContent);
+    result.fallbackReason = `Generation error: ${genErr.message}`;
+    result.method = 'rule-based';
+  }
 
-  if (!result.success) {
-    return res.status(500).json({ error: result.error || 'Failed to generate plan' });
+  // Even after fallback, if something is still wrong, try one more time
+  if (!result || !result.success) {
+    console.warn('[plans] Generation returned non-success, using rule-based fallback');
+    result = generateRuleBasedPlan(annotations, filesWithContent);
+    result.fallbackReason = result.fallbackReason || 'Generation returned non-success';
+    result.method = 'rule-based';
   }
 
   let rawChanges = normalizeChanges(result.plan.changes);
@@ -265,7 +285,10 @@ router.post('/:id/plan', async (req, res) => {
   // models take 60-90s), a second call would push total past 120s → 504.
   // Skip the retry if less than 40s of budget remains.
   const errCount = vs => vs.filter(v => v.status === 'error').length;
-  const elapsedMs = Date.now() - genStartTime;
+  // Use fnStartTime (function start) not genStartTime (generation start)
+  // because the 120s CF limit starts from request entry, and file I/O
+  // before the API call already consumed part of the budget.
+  const elapsedMs = Date.now() - fnStartTime;
   const RETRY_BUDGET_MS = 40000; // need at least 40s left to attempt a retry
   if (result.method === 'makers'
     && (errCount(validations) > 0 || consistency.uncovered_count > 0)
@@ -282,7 +305,8 @@ router.post('/:id/plan', async (req, res) => {
         filesWithContent,
         project.makers_model || undefined,
         agentsRules,
-        feedback
+        feedback,     // retryFeedback
+        fnStartTime   // pass function start time for dynamic timeout
       );
       if (retry.success) {
         const retryChanges = normalizeChanges(retry.plan.changes);
