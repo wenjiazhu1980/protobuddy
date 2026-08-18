@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard.jsx';
 import Review from './pages/Review.jsx';
 import PlanReview from './pages/PlanReview.jsx';
 import Settings from './pages/Settings.jsx';
+import { OwnerAuthProvider } from './components/OwnerAuthContext.jsx';
 
 function TopBar() {
   const location = useLocation();
@@ -27,15 +28,17 @@ function TopBar() {
 
 export default function App() {
   return (
-    <div className="app-layout">
-      <TopBar />
-      <Routes>
-        <Route path="/" element={<ProjectList />} />
-        <Route path="/project/:id" element={<Dashboard />} />
-        <Route path="/project/:id/review" element={<Review />} />
-        <Route path="/project/:id/plan" element={<PlanReview />} />
-        <Route path="/project/:id/settings" element={<Settings />} />
-      </Routes>
-    </div>
+    <OwnerAuthProvider>
+      <div className="app-layout">
+        <TopBar />
+        <Routes>
+          <Route path="/" element={<ProjectList />} />
+          <Route path="/project/:id" element={<Dashboard />} />
+          <Route path="/project/:id/review" element={<Review />} />
+          <Route path="/project/:id/plan" element={<PlanReview />} />
+          <Route path="/project/:id/settings" element={<Settings />} />
+        </Routes>
+      </div>
+    </OwnerAuthProvider>
   );
 }

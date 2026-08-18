@@ -39,13 +39,14 @@ export default function Review() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleAnnotate = async ({ x, y, content, page }) => {
+  const handleAnnotate = async ({ x, y, content, page, element_info }) => {
     try {
       const ann = await api.createAnnotation(id, {
         x, y,
         page: page || 'index.html',
         author: 'Reviewer',
-        content
+        content,
+        element_info
       });
       setAnnotations([...annotations, ann]);
       setAnnotateMode(false);
@@ -146,6 +147,25 @@ export default function Review() {
         <div className="preview-container">
           <div className="preview-toolbar">
             <span style={{ fontWeight: 500, fontSize: 13 }}>原型预览</span>
+            <span className="badge badge-blue" title="评审预览从平台存储读取，与 EdgeOne 部署为同源文件">
+              平台存储 v{project.version || 1}
+            </span>
+            {project.deploy_method === 'edgeone' || project.deploy_method === 'edgeone_manual' ? (
+              project.current_url && project.current_url.startsWith('http') ? (
+                <a
+                  className="btn btn-sm btn-secondary"
+                  href={project.current_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="在 EdgeOne 打开最新部署的版本"
+                >
+                  最新部署 ↗
+                </a>
+              ) : null
+            ) : null}
+            {project.status === 'deploy_failed' && (
+              <span className="badge badge-red" title="上次部署未成功，评审预览为平台存储中的文件版本">部署失败</span>
+            )}
             {project.current_url && (
               <span className="preview-url">{project.current_url}</span>
             )}

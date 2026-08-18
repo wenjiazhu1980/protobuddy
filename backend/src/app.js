@@ -9,6 +9,7 @@ import filesRouter from './routes/files.js';
 import deployRouter from './routes/deploy.js';
 import annotationsRouter from './routes/annotations.js';
 import plansRouter from './routes/plans.js';
+import ownerAuthRouter from './routes/ownerAuth.js';
 import { isBlobMode } from './config.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -96,6 +97,7 @@ export function createApp({ makersPrefix } = {}) {
   });
 
   // API routes (wrapped so async rejections become 500s instead of hanging)
+  app.use('/api/projects', wrapAsyncHandlers(ownerAuthRouter));    // /api/projects/:id/owner-auth/*
   app.use('/api/projects', wrapAsyncHandlers(projectsRouter));
   app.use('/api/projects', wrapAsyncHandlers(filesRouter));      // /api/projects/:id/preview/* etc.
   app.use('/api/projects', wrapAsyncHandlers(deployRouter));      // /api/projects/:id/deploy

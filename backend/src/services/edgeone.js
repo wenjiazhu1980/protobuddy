@@ -114,8 +114,13 @@ export async function deployToEdgeOne(project) {
     }
   }
 
-  const projectDir = getProjectDir(project.id);
-  const entrySubdir = findEntryPoint(project.id);
+  // NOTE: getProjectDir / findEntryPoint go through fileStorage.js's async
+  // `wrap()` and therefore return Promises — they MUST be awaited. Forgetting
+  // the await made path.join() receive a Promise and threw
+  // `The "path" argument must be of type string` on every local redeploy
+  // (blob mode took the Pages-API branch above, so the bug only bit local dev).
+  const projectDir = await getProjectDir(project.id);
+  const entrySubdir = await findEntryPoint(project.id);
   const deployDir = entrySubdir ? path.join(projectDir, entrySubdir) : projectDir;
 
   // Verify directory has content

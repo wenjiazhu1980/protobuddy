@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api.js';
+import { api, getOwnerToken } from '../api.js';
+import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
 
 export default function ProjectList() {
   const [projects, setProjects] = useState([]);
@@ -9,6 +10,7 @@ export default function ProjectList() {
   const [createForm, setCreateForm] = useState({ name: '', description: '', edgeone_project_name: '', edgeone_token: '', makers_key: '' });
   const [creating, setCreating] = useState(false);
   const navigate = useNavigate();
+  const { guard } = useOwnerAuth();
 
   const load = async () => {
     try {
@@ -40,9 +42,11 @@ export default function ProjectList() {
     e.stopPropagation();
     if (!confirm('确定删除此项目？所有相关文件和批注都将被删除。')) return;
     try {
-      await api.deleteProject(id);
+      // Owner maintenance operation: guarded by the owner password (one-time per session)
+      await guard(id, () => api.deleteProject(id, getOwnerToken(id)));
       load();
     } catch (err) {
+      if (err.message === 'owner verification cancelled') return;
       alert('删除失败: ' + err.message);
     }
   };

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getById, query, insert, update, remove } from '../db.js';
 import { readFileContent, writeFileContent, deleteFile, findEntryPoint, isBinaryFile } from '../services/fileStorage.js';
+import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
 
@@ -25,8 +26,8 @@ router.get('/:id/files/*', async (req, res) => {
   res.json({ path: filePath, ...content });
 });
 
-// Write/update a file's content
-router.post('/:id/files', async (req, res) => {
+// Write/update a file's content — owner maintenance operation
+router.post('/:id/files', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -50,8 +51,8 @@ router.post('/:id/files', async (req, res) => {
   res.json({ success: true, path: filePath });
 });
 
-// Delete a file
-router.delete('/:id/files/*', async (req, res) => {
+// Delete a file — owner maintenance operation
+router.delete('/:id/files/*', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -106,28 +107,47 @@ function injectScrollSyncScript(html) {
     'if(url){try{var u=new URL(url,location.href);if(u.origin===location.origin){var t=(target||"").toLowerCase();if(t==="_blank"||t===""){location.href=u.href;return window;}}}catch(_){}}' +
     'return _wopen.apply(this,arguments)};' +
     // 5. probe the DOM element under a viewport point (used by the annotation overlay)
+    //    and answer position queries for already-anchored annotations.
+    'function buildPath(el){var path=[];var p=el;while(p&&p!==document.body){var seg=p.tagName?p.tagName.toLowerCase():"";if(p.id&&p.id.trim)seg+="#"+p.id.trim();else if(p.className&&typeof p.className==="string"){var c=p.className.trim().split(/\\s+/).slice(0,2);if(c.length&&c[0])seg+="."+c.join(".");}path.unshift(seg);p=p.parentNode;}return path.join(" > ");}' +
+    'function buildElementInfo(el,dx,dy){' +
+    'var info={found:true,tagName:el.tagName,id:el.id||"",className:el.className||""};' +
+    'info.text=(el.innerText||el.textContent||"").slice(0,300);' +
+    'info.isHeading=/^H[1-6]$/i.test(el.tagName);' +
+    'try{info.fontSize=window.getComputedStyle(el).fontSize}catch(_){}' +
+    'var r=el.getBoundingClientRect();' +
+    'info.rect={left:r.left,top:r.top,width:r.width,height:r.height,right:r.right,bottom:r.bottom};' +
+    'info.scrollX=window.scrollX||0;info.scrollY=window.scrollY||0;' +
+    'info.docRect={left:r.left+info.scrollX,top:r.top+info.scrollY,width:r.width,height:r.height};' +
+    'if(typeof dx==="number"&&typeof dy==="number"){' +
+    'info.offsetX=r.width>0?((dx-r.left)/r.width):0.5;' +
+    'info.offsetY=r.height>0?((dy-r.top)/r.height):0;' +
+    '}' +
+    'info.path=buildPath(el);' +
+    'var parent=el.parentNode;' +
+    'if(parent){info.parentTag=parent.tagName||"";info.parentText=(parent.innerText||parent.textContent||"").slice(0,300);}' +
+    'return info;}' +
     'window.addEventListener("message",function(e){' +
-    'var d=e.data;if(!d||d.__protoProbe!==1)return;' +
+    'var d=e.data;if(!d)return;' +
+    'if(d.__protoProbe===1){' +
     'var info={__protoElement:1,id:d.id,found:false};' +
     'try{' +
     'var el=document.elementFromPoint(d.x,d.y);' +
     'if(!el)return window.parent.postMessage(info,"*");' +
-    'info.found=true;info.tagName=el.tagName;info.id=el.id||"";info.className=el.className||"";' +
-    'info.text=(el.innerText||el.textContent||"").slice(0,300);' +
-    'info.isHeading=/^H[1-6]$/i.test(el.tagName);' +
-    'try{info.fontSize=window.getComputedStyle(el).fontSize}catch(_){}' +
-    'var path=[];var p=el;' +
-    'while(p&&p!==document.body){' +
-    'var seg=p.tagName?p.tagName.toLowerCase():"";' +
-    'if(p.id&&p.id.trim)seg+="#"+p.id.trim();' +
-    'else if(p.className&&typeof p.className==="string"){var c=p.className.trim().split(/\\s+/).slice(0,2);if(c.length&&c[0])seg+="."+c.join(".");}' +
-    'path.unshift(seg);p=p.parentNode;' +
-    '}' +
-    'info.path=path.join(" > ");' +
-    'var parent=el.parentNode;' +
-    'if(parent){info.parentTag=parent.tagName||"";info.parentText=(parent.innerText||parent.textContent||"").slice(0,300);}' +
+    'Object.assign(info,buildElementInfo(el,d.x,d.y));' +
     '}catch(err){info.error=err.message;}' +
     'window.parent.postMessage(info,"*");' +
+    'return;}' +
+    'if(d.__protoQuery===1){' +
+    'var res={__protoElementPos:1,id:d.id,found:false};' +
+    'try{' +
+    'var el=null;' +
+    'if(d.elementId)el=document.getElementById(d.elementId);' +
+    'if(!el&&d.path){try{el=document.querySelector(d.path);}catch(_){}}' +
+    'if(!el&&d.text){var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);var node;while(node=walker.nextNode()){if(node.textContent.indexOf(d.text)!==-1){el=node.parentElement;break;}}}' +
+    'if(el){Object.assign(res,buildElementInfo(el,0,0));res.viewport={width:window.innerWidth,height:window.innerHeight};}' +
+    '}catch(err){res.error=err.message;}' +
+    'window.parent.postMessage(res,"*");' +
+    'return;}' +
     '});' +
     'nav();document.readyState!=="loading"&&s()}();</script>';
 

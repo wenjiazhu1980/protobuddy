@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api } from '../api.js';
+import { api, getOwnerToken } from '../api.js';
+import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
 
 export default function Settings() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { guard } = useOwnerAuth();
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -19,13 +21,13 @@ export default function Settings() {
   const [toast, setToast] = useState(null);
 
   const MAKERS_MODELS = [
-    { id: '@makers/hy3', label: '@makers/hy3 · 腾讯混元 3.0（默认）' },
-    { id: '@makers/hy3-preview', label: '@makers/hy3-preview · 混元 3.0 预览' },
-    { id: '@makers/deepseek-v4-flash', label: '@makers/deepseek-v4-flash · DeepSeek V4 Flash' },
-    { id: '@makers/deepseek-v4-pro', label: '@makers/deepseek-v4-pro · DeepSeek V4 Pro' },
-    { id: '@makers/minimax-m3', label: '@makers/minimax-m3 · MiniMax M3' },
-    { id: '@makers/minimax-m2.7', label: '@makers/minimax-m2.7 · MiniMax M2.7' },
-    { id: '@makers/kimi-k2.6', label: '@makers/kimi-k2.6 · Kimi K2.6' }
+    { id: '@makers/hy3', label: '@makers/hy3 · 腾讯混元 3.0（默认·快）' },
+    { id: '@makers/hy3-preview', label: '@makers/hy3-preview · 混元 3.0 预览（快）' },
+    { id: '@makers/deepseek-v4-flash', label: '@makers/deepseek-v4-flash · DeepSeek V4 Flash（推理·快）' },
+    { id: '@makers/deepseek-v4-pro', label: '@makers/deepseek-v4-pro · DeepSeek V4 Pro（推理·质量高）' },
+    { id: '@makers/minimax-m3', label: '@makers/minimax-m3 · MiniMax M3（推理）' },
+    { id: '@makers/minimax-m2.7', label: '@makers/minimax-m2.7 · MiniMax M2.7（推理）' },
+    { id: '@makers/kimi-k2.6', label: '@makers/kimi-k2.6 · Kimi K2.6（推理·慢）' }
   ];
 
   const showToast = (msg, type = 'success') => {
@@ -64,12 +66,13 @@ export default function Settings() {
       if (form.edgeone_token) patch.edgeone_token = form.edgeone_token;
       if (form.makers_key) patch.makers_key = form.makers_key;
 
-      const updated = await api.updateProject(id, patch);
+      // Owner maintenance operation: guarded by the owner password (one-time per session)
+      const updated = await guard(id, () => api.updateProject(id, patch, getOwnerToken(id)));
       setProject(updated);
       showToast('设置已保存');
       setForm({ ...form, edgeone_token: '', makers_key: '' });
     } catch (err) {
-      showToast('保存失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('保存失败: ' + err.message, 'error');
     } finally {
       setSaving(false);
     }

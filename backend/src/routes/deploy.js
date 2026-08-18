@@ -2,11 +2,12 @@ import { Router } from 'express';
 import { getById, insert, update, query } from '../db.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
 import { checkDeployment, getProjectUrl } from '../services/makersApi.js';
+import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
 
-// Deploy a project
-router.post('/:id/deploy', async (req, res) => {
+// Deploy a project — owner operation
+router.post('/:id/deploy', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -118,8 +119,8 @@ router.get('/:id/deploy-status', async (req, res) => {
   }
 });
 
-// Manually set/update project preview URL (e.g. when CLI output cannot be parsed)
-router.post('/:id/preview-url', async (req, res) => {
+// Manually set/update project preview URL — owner operation
+router.post('/:id/preview-url', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 

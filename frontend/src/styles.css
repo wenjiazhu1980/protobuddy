@@ -318,6 +318,19 @@ button {
   white-space: nowrap;
 }
 
+/* Data-source hint row shown above the preview iframe when the project has a
+   separate EdgeOne deployment (e.g. deployed from local CLI or another host). */
+.preview-sync-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--yellow-light);
+  border-bottom: 1px solid var(--border);
+}
+
 .preview-iframe-wrapper {
   position: relative;
   flex: 1;
@@ -682,5 +695,30 @@ button {
   padding: 48px;
   flex-direction: column;
   gap: 12px;
+  color: var(--text-muted);
+}
+
+/* Owner password verification dialog */
+.auth-error {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #b91c1c;
+  font-size: 13px;
+}
+.auth-locked {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  color: #92400e;
+  font-size: 13px;
+}
+.auth-note {
+  margin-top: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }

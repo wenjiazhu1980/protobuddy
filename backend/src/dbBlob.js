@@ -91,7 +91,17 @@ export async function getById(table, id) {
 export async function insert(table, record) {
   await ensureLoaded();
   if (!db[table]) db[table] = [];
-  const id = record.id || await nextId();
+  // NOTE: do NOT call nextId() here — it re-runs ensureLoaded() which reloads
+  // the whole DB document from Blob, wiping out the freshly-created table above
+  // (a new table like `ownerAuth` does not exist in Blob yet, so after the
+  // reload db[table] is undefined again and the push below throws
+  // "Cannot read properties of undefined (reading 'push')"). Generate the id
+  // inline against the already-loaded in-memory document instead.
+  let id = record.id;
+  if (!id) {
+    db._seq = (db._seq || 0) + 1;
+    id = db._seq;
+  }
   const now = new Date().toISOString();
   const full = { id, created_at: now, updated_at: now, ...record, id };
   db[table].push(full);

@@ -29,17 +29,76 @@
 
 ## 关键文件
 - `backend/src/index.js` - Express入口
-- `backend/src/db.js` - JSON文件存储
+- `backend/src/db.js` - 存储驱动分发（blob/local 懒加载）
+- `backend/src/dbBlob.js` - Blob 存储驱动（EdgeOne Makers 线上模式）
 - `backend/src/services/edgeone.js` - EdgeOne CLI部署 + 兜底
 - `backend/src/services/makersModels.js` - Makers Models代理 + 规则引擎兜底
 - `backend/src/services/fileStorage.js` - 文件存储（ZIP解压、路径解析）
+- `backend/src/services/ownerAuth.js` - owner 操作密码验证（HMAC token + 失败锁定）
+- `cloud-functions/api/[[default]].js` - EdgeOne Makers 框架函数入口
 - `frontend/src/pages/Review.jsx` - 评审页（iframe + 锚点批注核心）
-- `frontend/src/components/PreviewFrame.jsx` - 透明覆盖层实现
+- `frontend/src/components/PreviewFrame.jsx` - 透明覆盖层实现 + 元素锚定/滚动同步
 - `frontend/src/components/AnnotationLayer.jsx` - 批注面板
+- `frontend/src/components/OwnerAuthDialog.jsx` / `OwnerAuthContext.jsx` - owner 密码弹窗与会话验证
+
+## 上线部署（EdgeOne Makers 全栈，2026-08-17）
+- **线上地址**: `https://protobuddy-app.edgeone.cool`（主用，当前部署 dpt9pkpdbxzp）
+- Cloud Functions（Express 框架函数，/api/*）+ Blob 存储 + 静态前端同一项目
+- 部署命令: `npx edgeone makers build --mode prod` → `npx edgeone makers deploy . -n protobuddy-app -t <token> -e production --json -a global`
+- 完整流程与避坑见 skill: `~/.workbuddy/skills/edgeone-makers-deploy/SKILL.md`
+
+## 迭代 14-17 关键能力
+- **迭代 14**: 批注后不再自动生成方案，改为手动触发「生成修改方案」
+- **迭代 15**: 批注锚点升级为**元素级**（点击元素探测 __protoProbe，记录 tagName/id/path/text 等）；应用修改时 old_code 唯一性检查，防止误改多处
+- **迭代 16**: 批注标记**随页面滚动实时同步**（__protoQuery 按 id/path/text 查询元素当前位置，throttle+rAF 批量更新，滚出视口自动隐藏）
+- **迭代 17**: **owner 操作密码验证**——受保护操作（项目维护/文件上传/部署/方案审核/方案应用）需密码（默认 gugugaga2026，OWNER_PASSWORD 可配置）；会话内一次验证（HMAC token 8h）；连续失败 5 次锁定 5 分钟；仅 owner 角色生效。线上端到端验证全部通过
+- **迭代 18**: **修复 Kimi K2.6 调用 400**——推理模型（@makers/kimi-k2.6，内置免费）拒绝 temperature 参数（moonshot 400001），已按模型适配（不传 temperature、max_tokens 8000、超时 120s）；同时修复大项目生成方案 504（只读批注相关文件 ≤10 个，不再全量读 56 个文件）。设置页可选 7 种内置模型，Kimi K2.6 已线上验证
+- **迭代 19**: **7 个内置模型全部兼容**——实测仅 kimi-k2.6 拒绝 temperature；minimax-m3 会把 `<think>` 思维链混入 content 污染 JSON，已在解析层剥离 `<think>/<reasoning>` 标签兜底；推理模型识别扩为 deepseek-v4/minimax（max_tokens 8000、超时 120s）。设置页下拉标注快慢/质量便于选择。线上实测 deepseek-v4-pro（66.9s 质量高）、minimax-m3（14.5s）均正常；推荐 deepseek-v4-flash（快+均衡）
+
+## 迭代 20：排查「应用修改方案持续失败」——agent 未参与修改 + 两处真实 bug 修复
+- **排查结论（用户 4 点）**：
+  1. **agent 未执行修改**：`POST /plans/:planId/apply` 只做 `content.replace(old_code, new_code)` 机械替换，agent（Makers Models）仅在「生成方案」阶段调用，应用阶段无 agent 参与——方案不精确即失败；
+  2. **路径/参数/权限**：发现真 bug——`edgeone.js` local 分支 `getProjectDir()/findEntryPoint()` 是 async wrap 但未 await → `path.join(Promise)` 抛 `The "path" argument must be of type string` → **本地每次 apply 后 redeploy 必失败**（本地复现确认）；
+  3. **返回值**：apply 无论成败都返回 HTTP 200；`success:false` 只在 body；且**无条件 `plan.status='applied'` + resolve 批注** → 失败被永久化、无法重试；
+  4. **异常静默**：`makersModels.js` API 失败静默降级规则引擎（success:true，只有小黄条提示）；规则引擎 old_code 是「位置切片」几乎必不匹配 → apply 失败主因；dbLocal save() 写盘失败静默吞。
+- **修复**：
+  - edgeone.js 补 `await`（Bug B，本地 redeploy 恢复）；
+  - plans.js apply 语义重写：失败 change 回退 approved、plan 回退 approved、不 resolve 批注、返回 **HTTP 409 + 具体 errors**；检查 writeFileContent 返回值；仅成功时才标 applied；deploy 失败独立报 deployError（200 + success:false）；
+  - 前端 PlanReview：失败留在本页并展示具体错误、可重试；api.js 透传 err.errors/deployError。
+- **本地端到端验证**：失败路径 409 + plan 从误标 applied 回退 approved ✓；成功路径 200 + 文件改动 + redeploy 正常（不再 Promise 报错）✓；测试副作用（本地文件文案 + shop-demo 线上部署）已还原并重新部署 ✓。
+- 构建产物 `.edgeone/cloud-functions/api-node/index.mjs` 已确认含两处修复（allChangesApplied/failedChanges/deployError + await getProjectDir）。**线上部署待凭据**（当前 edgeone-pages connector 未连接，本机无平台 token）。
+
+## 迭代 21：评审预览与 EdgeOne 部署数据源不一致（2026-08-18）
+- **现象**：`https://protobuddy-app.edgeone.cool/api/projects/1/preview/`（评审预览）显示的不是最新 EdgeOne Makers 部署，而是「平台存储」里的旧文件。
+- **根因**：评审预览 iframe 永远加载 `/api/projects/:id/preview/`（`PreviewFrame.jsx` 第 61 行），该路由从**平台存储**（线上=Blob / 本地=fs，`files.js` 的 `servePreview` → `readFileContent`）读文件；而 EdgeOne 部署（`edgeone.js`）也是从 Blob 读文件外发（`collectCloudFiles`）——**两边本应同源**。脱节发生在「部署不是从 Blob 来的」：项目 1 的最新部署是**本地 CLI 推送的**（`data/projects/1/test-prototype/.edgeone/project.json` → `shop-demo`，`makers-be6pk5nfw6np`），线上 Blob 里项目 1 仍是旧 demo 文件 → 评审预览读 Blob = 旧版。
+- **修复**：
+  1. **UI 明示数据源**（本次已改）：Review 页工具栏新增「平台存储 v{version}」徽章 + 部署成功时「最新部署 ↗」外链按钮（新窗口打开 EdgeOne 部署）；`deploy_failed` 状态显示红色「部署失败」徽章。CSS 新增 `.preview-sync-hint` 预留提示条。
+  2. **数据同步（待线上授权）**：需用户提供 protobuddy-app 带 eo_token 的预览链接 → 用 `/api/projects/1/files` 将本地最新文件上传覆盖 Blob → 重新部署。
+  3. **流程约定**：所有文件变更一律走平台（上传/apply 写 Blob），EdgeOne 部署永远从 Blob 外发，评审预览恒等于最新部署。
+- **待办**：线上 Blob 数据同步（需授权链接）+ 前端构建产物（含本次 UI 改动）部署线上。
+
+## 迭代 21 完成：评审预览与 EdgeOne 部署已同源一致（2026-08-18 上午）
+- 用户提供 `protobuddy-app.edgeone.cool?eo_token=...` 授权链接 → 两步 cookie 法访问线上 API。
+- **同步**：owner 密码验证 → `POST /api/projects/1/files` 将本地最新 `test-prototype/index.html` 覆盖到 blob 入口 `原型设计/index.html`（version 2→3，未删除旧文件）→ 评审预览立即显示最新。
+- **重新部署**：`POST /api/projects/1/deploy` → **deployment #197 / version 20 / success / Deployed 56 files** → `shop-demo.edgeone.dev` 两步 cookie 验证与评审预览内容完全一致（title 测试原型-电商首页 / h1 ShopDemo / h2 秋季新品上市）。
+- **残留**：blob 仍保留 55 个旧 demo 文件（仅入口已换新）；如需纯净产物，可在平台重新上传只含最新原型的 ZIP。
+- **待办**：前端构建产物（Review 页数据源徽章 + 最新部署外链）部署线上，需平台 token。
+
+## 迭代 21 部署完成：protobuddy-app 全量上线 + 新原型部署（2026-08-18 上午）
+- 用户提供平台 API Token（`oGARc1Fv...=` base64 密钥格式）→ 重建产物（前端重新 build，`index-CJ2WBaSv.js` 含 Review 页「平台存储」徽章）+ `npx edgeone makers deploy . -n protobuddy-app -t <token> -e production --json -a global` → **deployment `dp2mjapgp8kp`（61s）成功**。
+- 线上验证：health 200、项目列表正常、首页 200 且引用新 JS（`index-CJ2WBaSv.js` 含「平台存储/最新部署」徽章代码）✓——**迭代 20（apply 409 语义 + edgeone await 修复）与迭代 21（UI 明示数据源）全部上线**。
+- 发现线上 Blob 项目 1 已被用户替换为 **CIS 阶段二原型（41 个 `phase-2/` 文件，入口 `phase-2/index.html`，title「CIS 阶段二原型入口」）**，但最新部署仍停在 v20 旧电商原型 → 触发 `POST /api/projects/1/deploy` → **deployment #240 / version 23 / success / Deployed 41 files** → `shop-demo.edgeone.dev` 两步 cookie 验证 = 评审预览完全一致（CIS 阶段二原型入口 / 阶段二 · 履约闭环原型）✓。
+- 至此「评审预览 = 最新部署」闭环达成；旧 56 文件 demo 已被用户重新上传覆盖清空（blob 现仅 41 个 phase-2 文件，无残留）。
+
+## 线上验证要点（排查踩坑）
+- curl 验证 body 必须用「纯 cookie 两步法」（先 GET 换 cookie，POST 不带 eo_token）；`-L` 在 302 后丢 POST body 会误判平台不解析
+- dbBlob.js 的 insert 勿调 nextId()（其内部 reload 会覆盖新表）；已内联 id 生成
+- 部署前必须先 `npx edgeone makers build --mode prod`（否则可能复用旧 cloud function 快照）
 
 ## 运行方式
 - 开发模式: 后端(3001) + 前端dev(5173)，Vite代理API
 - 生产模式: `cd frontend && npm run build` → `cd backend && npm start`（单服务器）
+- 线上: 见「上线部署」
 
 ## 待用户配置（可选）
 - EdgeOne Makers API Token（部署到EdgeOne，否则本地托管）

@@ -3,6 +3,7 @@ import { getById, query, insert, update } from '../db.js';
 import { generatePlanWithMakers } from '../services/makersModels.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
+import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
 
@@ -20,10 +21,21 @@ router.post('/:id/plan', async (req, res) => {
     return res.status(400).json({ error: 'No open annotations to generate plan from' });
   }
 
-  // Get current files with content
+  // Get current files with content.
+  // IMPORTANT: only read files relevant to the annotations first (ranked by the
+  // page they target), then top up with other files up to a cap of 10. Reading
+  // ALL files (some >700KB) serially from blob can push the request past the
+  // 120s Cloud Functions limit once combined with a slow reasoning model
+  // (e.g. @makers/kimi-k2.6 takes 30-60s to think).
   const fileRecords = await query('files', f => String(f.project_id) === String(req.params.id));
+  const targetPages = [...new Set(annotations.map(a => a.page).filter(Boolean))];
+  const rank = f => {
+    const hit = targetPages.findIndex(p => f.path === p || f.path.endsWith('/' + p));
+    return hit === -1 ? 999 : hit;
+  };
+  const selectedFiles = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, 10);
   const filesWithContent = [];
-  for (const f of fileRecords) {
+  for (const f of selectedFiles) {
     const content = await readFileContent(req.params.id, f.path);
     if (content !== null) {
       filesWithContent.push({ path: f.path, content });
@@ -136,8 +148,8 @@ router.get('/plans/:planId', async (req, res) => {
   res.json({ ...plan, changes });
 });
 
-// Approve/reject a plan (overall)
-router.post('/plans/:planId/approve', async (req, res) => {
+// Approve/reject a plan (overall) — plan review is an owner operation
+router.post('/plans/:planId/approve', requireOwnerAuth, async (req, res) => {
   const plan = await getById('plans', req.params.planId);
   if (!plan) return res.status(404).json({ error: 'Plan not found' });
 
@@ -145,7 +157,7 @@ router.post('/plans/:planId/approve', async (req, res) => {
   res.json(updated);
 });
 
-router.post('/plans/:planId/reject', async (req, res) => {
+router.post('/plans/:planId/reject', requireOwnerAuth, async (req, res) => {
   const plan = await getById('plans', req.params.planId);
   if (!plan) return res.status(404).json({ error: 'Plan not found' });
 
@@ -161,8 +173,8 @@ router.post('/plans/:planId/reject', async (req, res) => {
   res.json(updated);
 });
 
-// Approve/reject individual changes
-router.post('/plans/:planId/changes/:changeId/approve', async (req, res) => {
+// Approve/reject individual changes — plan review is an owner operation
+router.post('/plans/:planId/changes/:changeId/approve', requireOwnerAuth, async (req, res) => {
   const change = await getById('planChanges', req.params.changeId);
   if (!change || String(change.plan_id) !== String(req.params.planId)) {
     return res.status(404).json({ error: 'Change not found' });
@@ -172,7 +184,7 @@ router.post('/plans/:planId/changes/:changeId/approve', async (req, res) => {
   res.json(updated);
 });
 
-router.post('/plans/:planId/changes/:changeId/reject', async (req, res) => {
+router.post('/plans/:planId/changes/:changeId/reject', requireOwnerAuth, async (req, res) => {
   const change = await getById('planChanges', req.params.changeId);
   if (!change || String(change.plan_id) !== String(req.params.planId)) {
     return res.status(404).json({ error: 'Change not found' });
@@ -182,8 +194,14 @@ router.post('/plans/:planId/changes/:changeId/reject', async (req, res) => {
   res.json(updated);
 });
 
-// Apply approved changes to files and trigger redeploy
-router.post('/plans/:planId/apply', async (req, res) => {
+// Apply approved changes to files and trigger redeploy — owner operation.
+// Failure semantics (fixed): when any change fails to apply, the plan is NOT
+// marked 'applied', annotations are NOT resolved, failed changes roll back to
+// 'approved' so the owner can fix and retry, and the response is HTTP 409 with
+// the concrete errors. Previously the handler returned HTTP 200 with
+// success:false and unconditionally set status='applied' + resolved annotations,
+// which silently turned a failed apply into an un-retryable "success".
+router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
   const plan = await getById('plans', req.params.planId);
   if (!plan) return res.status(404).json({ error: 'Plan not found' });
 
@@ -196,6 +214,7 @@ router.post('/plans/:planId/apply', async (req, res) => {
   }
 
   const appliedChanges = [];
+  const failedChanges = [];
   const errors = [];
 
   for (const change of changes) {
@@ -203,100 +222,140 @@ router.post('/plans/:planId/apply', async (req, res) => {
       // Read current file content
       const current = await readFileContent(plan.project_id, change.file_path);
       if (!current) {
-        errors.push(`File not found: ${change.file_path}`);
+        errors.push(`文件不存在: ${change.file_path}`);
+        failedChanges.push(change);
         continue;
       }
 
       if (current.binary) {
-        errors.push(`Cannot apply changes to binary file: ${change.file_path}`);
+        errors.push(`无法对二进制文件应用修改: ${change.file_path}`);
+        failedChanges.push(change);
         continue;
       }
 
       let content = current.data;
+      let nextContent = null;
 
       // Apply the change: replace old_code with new_code. We require old_code
       // to exist and be unique in the file so we never change the wrong place.
       if (change.old_code && change.new_code) {
         if (!content.includes(change.old_code)) {
-          errors.push(`old_code not found in ${change.file_path}; cannot apply. The generated change may be imprecise. Reject this change and create a more specific annotation.`);
+          errors.push(`old_code 未在 ${change.file_path} 中找到，未做任何修改。生成的修改可能不精确，请驳回该条建议并创建更精确的批注。`);
+          failedChanges.push(change);
           continue;
         }
         const occurrences = content.split(change.old_code).length - 1;
         if (occurrences > 1) {
-          errors.push(`old_code matches ${occurrences} times in ${change.file_path}; cannot apply safely because the change would affect multiple locations. Reject this change and create a more specific annotation.`);
+          errors.push(`old_code 在 ${change.file_path} 中匹配 ${occurrences} 次，无法安全应用（会改动多个位置）。请驳回该条建议并创建更具体的批注。`);
+          failedChanges.push(change);
           continue;
         }
-        content = content.replace(change.old_code, change.new_code);
-        await writeFileContent(plan.project_id, change.file_path, content);
-        await update('planChanges', change.id, { status: 'applied' });
-        appliedChanges.push(change.id);
+        nextContent = content.replace(change.old_code, change.new_code);
       } else if (change.new_code) {
         // If old_code doesn't match, append the new code with a comment
-        const insertion = `\n\n<!-- Applied change: ${change.description} -->\n${change.new_code}\n`;
-        content += insertion;
-        await writeFileContent(plan.project_id, change.file_path, content);
-        await update('planChanges', change.id, { status: 'applied' });
-        appliedChanges.push(change.id);
+        nextContent = content + `\n\n<!-- Applied change: ${change.description} -->\n${change.new_code}\n`;
       } else {
-        errors.push(`No actionable code change for: ${change.file_path}`);
+        errors.push(`该修改建议无可执行的代码变更: ${change.file_path}`);
+        failedChanges.push(change);
+        continue;
       }
+
+      // Write the file back and CHECK the driver's result (blob/local drivers
+      // can return false without throwing, e.g. empty normalized path).
+      const wrote = await writeFileContent(plan.project_id, change.file_path, nextContent);
+      if (!wrote) {
+        errors.push(`写入文件失败: ${change.file_path}（存储驱动未确认写入）`);
+        failedChanges.push(change);
+        continue;
+      }
+      await update('planChanges', change.id, { status: 'applied' });
+      appliedChanges.push(change.id);
     } catch (err) {
-      errors.push(`Error applying change to ${change.file_path}: ${err.message}`);
+      errors.push(`应用 ${change.file_path} 时出错: ${err.message}`);
+      failedChanges.push(change);
     }
   }
 
-  // Mark plan as applied
-  await update('plans', req.params.planId, { status: 'applied' });
-
-  // Resolve annotations that were addressed
-  for (const change of changes) {
-    if (change.annotation_id) {
-      await update('annotations', change.annotation_id, { status: 'resolved' });
+  const allChangesApplied = errors.length === 0;
+  if (allChangesApplied) {
+    // Everything applied cleanly: finalize the plan and resolve its annotations.
+    await update('plans', req.params.planId, { status: 'applied' });
+    for (const change of changes) {
+      if (change.annotation_id) {
+        await update('annotations', change.annotation_id, { status: 'resolved' });
+      }
     }
+  } else {
+    // Roll failed changes back to 'approved' (already-applied ones stay
+    // 'applied') so the owner can fix the failing change and retry the apply.
+    for (const change of failedChanges) {
+      await update('planChanges', change.id, { status: 'approved' });
+    }
+    await update('plans', req.params.planId, { status: 'approved' });
   }
 
-  // Trigger redeploy
-  const project = await getById('projects', plan.project_id);
+  // Trigger redeploy — only when at least one change was actually written.
   let deployResult = null;
-  if (project) {
-    try {
-      deployResult = await deployToEdgeOne(project);
-      let previewUrl = deployResult.url;
-      if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        // In Makers Cloud Functions the API is a plain onRequest function
-        // mounted at /api (not /express); locally it is /api too.
-        previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
+  let deployError = '';
+  if (appliedChanges.length > 0) {
+    const project = await getById('projects', plan.project_id);
+    if (project) {
+      try {
+        deployResult = await deployToEdgeOne(project);
+        let previewUrl = deployResult.url;
+        if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
+          const baseUrl = `${req.protocol}://${req.get('host')}`;
+          // In Makers Cloud Functions the API is a plain onRequest function
+          // mounted at /api (not /express); locally it is /api too.
+          previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
+        }
+
+        const version = (project.version || 0) + 1;
+        await insert('deployments', {
+          project_id: plan.project_id,
+          version,
+          url: previewUrl,
+          env: 'production',
+          status: deployResult.success ? 'success' : 'failed',
+          method: deployResult.method,
+          log: `Applied plan #${plan.id}: ${appliedChanges.length} changes. ${deployResult.log || ''}`
+        });
+
+        await update('projects', plan.project_id, {
+          current_url: previewUrl,
+          version,
+          status: 'deployed'
+        });
+
+        if (!deployResult.success) {
+          deployError = `重新部署失败: ${deployResult.error || 'unknown error'}`;
+        }
+      } catch (err) {
+        deployError = `重新部署失败: ${err.message}`;
       }
-
-      const version = (project.version || 0) + 1;
-      await insert('deployments', {
-        project_id: plan.project_id,
-        version,
-        url: previewUrl,
-        env: 'production',
-        status: deployResult.success ? 'success' : 'failed',
-        method: deployResult.method,
-        log: `Applied plan #${plan.id}: ${appliedChanges.length} changes. ${deployResult.log || ''}`
-      });
-
-      await update('projects', plan.project_id, {
-        current_url: previewUrl,
-        version,
-        status: 'deployed'
-      });
-    } catch (err) {
-      errors.push(`Redeploy failed: ${err.message}`);
     }
   }
 
-  res.json({
-    success: errors.length === 0,
+  // Response semantics:
+  // - Any change that failed to apply -> HTTP 409 (conflict, retryable) with
+  //   the concrete errors. The plan stayed/rolled back to 'approved'.
+  // - All changes applied but redeploy failed -> HTTP 200 + success:false so
+  //   the file edits are not mistaken for a failure, yet the deploy issue is
+  //   clearly reported.
+  // - Everything ok -> HTTP 200 + success:true.
+  const body = {
+    success: allChangesApplied && !deployError,
     appliedCount: appliedChanges.length,
-    errorCount: errors.length,
+    errorCount: errors.length + (deployError ? 1 : 0),
     errors,
+    deployError: deployError || undefined,
     deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null
-  });
+  };
+
+  if (!allChangesApplied) {
+    return res.status(409).json({ ...body, error: errors[0] || '应用修改失败' });
+  }
+  res.json(body);
 });
 
 export default router;

@@ -91,23 +91,36 @@ Generate a modification plan in JSON format.`;
 
     console.log(`[makersModels] Calling Makers Models API (model=${model})...`);
 
+    // Kimi K2.x is a reasoning model: the Moonshot API REJECTS the `temperature`
+    // parameter for it (400001 invalid_request_parameters). Reasoning models use
+    // fixed sampling, so we must omit temperature for them.
+    // deepseek-v4 / minimax also emit reasoning (reasoning_content / <think>),
+    // so treat them as reasoning models too: more tokens + longer timeout.
+    const isReasoningModel = /kimi-k2|deepseek-v4|minimax/i.test(model || '');
+    const payload = {
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      // Reasoning models spend tokens on `reasoning_content` first; give them
+      // more room so the final JSON content is not truncated.
+      max_tokens: isReasoningModel ? 8000 : 4000,
+      response_format: { type: 'json_object' }
+    };
+    if (!isReasoningModel) {
+      payload.temperature = 0.3;
+    }
+
     const response = await fetch(MAKERS_MODELS_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt }
-        ],
-        temperature: 0.3,
-        max_tokens: 4000,
-        response_format: { type: 'json_object' }
-      }),
-      signal: AbortSignal.timeout(60000)
+      body: JSON.stringify(payload),
+      // Reasoning models think before answering; give them more time.
+      signal: AbortSignal.timeout(isReasoningModel ? 120000 : 60000)
     });
 
     if (!response.ok) {
@@ -122,9 +135,17 @@ Generate a modification plan in JSON format.`;
     // Try to parse JSON from the response
     let planData;
     try {
+      // Strip reasoning/thinking tags that some models (e.g. minimax-m3) inline
+      // into `content` (e.g. "<think>...</think>\n{...}"). This is a safety net —
+      // kimi/deepseek put reasoning into a separate `reasoning_content` field.
+      let clean = content
+        .replace(/<think[\s\S]*?<\/think>/gi, '')
+        .replace(/<reasoning[\s\S]*?<\/reasoning>/gi, '')
+        .replace(/```(?:json)?\s*/gi, '')
+        .replace(/```/g, '');
       // Extract JSON from possible markdown code blocks
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      planData = JSON.parse(jsonMatch ? jsonMatch[0] : content);
+      const jsonMatch = clean.match(/\{[\s\S]*\}/);
+      planData = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
     } catch (parseErr) {
       console.warn('[makersModels] Failed to parse JSON response, using as plain text');
       planData = {

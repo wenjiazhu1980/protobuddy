@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { getAll, getById, insert, update, remove, query } from '../db.js';
 import { unzipToProject, writeUploadedFiles, clearProjectFiles, ensureProjectDir, getFileSize, removeProjectFiles } from '../services/fileStorage.js';
+import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
 const upload = multer({
@@ -60,8 +61,8 @@ router.post('/', async (req, res) => {
   });
 });
 
-// Update project (including settings/keys)
-router.put('/:id', async (req, res) => {
+// Update project (including settings/keys) — owner maintenance operation
+router.put('/:id', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -82,8 +83,8 @@ router.put('/:id', async (req, res) => {
   });
 });
 
-// Delete project
-router.delete('/:id', async (req, res) => {
+// Delete project — owner maintenance operation
+router.delete('/:id', requireOwnerAuth, async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
@@ -111,7 +112,8 @@ router.delete('/:id', async (req, res) => {
  *   - folder : `files[]` = multiple files, `paths[]` = relative paths (must contain index.html)
  *   - html   : `file` field = single index.html (or any .html file, stored as index.html)
  */
-router.post('/:id/upload', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'files', maxCount: 500 }]), async (req, res) => {
+// Owner-gated: uploading a new prototype replaces existing files
+router.post('/:id/upload', requireOwnerAuth, upload.fields([{ name: 'file', maxCount: 1 }, { name: 'files', maxCount: 500 }]), async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 

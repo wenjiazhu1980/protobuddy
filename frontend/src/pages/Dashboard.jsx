@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api } from '../api.js';
+import { api, getOwnerToken } from '../api.js';
+import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
 
 export default function Dashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { guard } = useOwnerAuth();
   const [project, setProject] = useState(null);
   const [files, setFiles] = useState([]);
   const [deployments, setDeployments] = useState([]);
@@ -50,11 +52,12 @@ export default function Dashboard() {
     if (!file) return;
     setUploading(true);
     try {
-      const result = await api.uploadPrototype(id, file);
+      // Owner operation: guarded by the owner password (one-time per session)
+      const result = await guard(id, () => api.uploadPrototype(id, file, getOwnerToken(id)));
       showToast(`ZIP 上传成功，共 ${result.fileCount} 个文件`);
       load();
     } catch (err) {
-      showToast('上传失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('上传失败: ' + err.message, 'error');
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -70,11 +73,11 @@ export default function Dashboard() {
         file,
         relPath: file.webkitRelativePath || file.name
       }));
-      const result = await api.uploadPrototypeFiles(id, 'folder', items);
+      const result = await guard(id, () => api.uploadPrototypeFiles(id, 'folder', items, getOwnerToken(id)));
       showToast(`文件夹上传成功，共 ${result.fileCount} 个文件`);
       load();
     } catch (err) {
-      showToast('文件夹上传失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('文件夹上传失败: ' + err.message, 'error');
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -86,11 +89,11 @@ export default function Dashboard() {
     if (!file) return;
     setUploading(true);
     try {
-      const result = await api.uploadPrototypeFiles(id, 'html', file);
+      const result = await guard(id, () => api.uploadPrototypeFiles(id, 'html', file, getOwnerToken(id)));
       showToast('index.html 上传成功');
       load();
     } catch (err) {
-      showToast('上传失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('上传失败: ' + err.message, 'error');
     } finally {
       setUploading(false);
       e.target.value = '';
@@ -100,7 +103,8 @@ export default function Dashboard() {
   const handleDeploy = async () => {
     setDeploying(true);
     try {
-      let result = await api.deploy(id);
+      // Owner operation: guarded by the owner password (one-time per session)
+      let result = await guard(id, () => api.deploy(id, getOwnerToken(id)));
       // EdgeOne Pages API deploy may still be building server-side; keep polling
       // until the deployment leaves Process/Pending (max ~5 min).
       if (result.method === 'edgeone_deploying' || result.status === 'deploying') {
@@ -133,7 +137,7 @@ export default function Dashboard() {
       }
       load();
     } catch (err) {
-      showToast('部署失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('部署失败: ' + err.message, 'error');
     } finally {
       setDeploying(false);
     }
@@ -145,13 +149,14 @@ export default function Dashboard() {
       return;
     }
     try {
-      await api.setPreviewUrl(id, manualUrl.trim());
+      // Owner operation: guarded by the owner password (one-time per session)
+      await guard(id, () => api.setPreviewUrl(id, manualUrl.trim(), getOwnerToken(id)));
       showToast('在线预览地址已更新');
       setShowManualUrl(false);
       setManualUrl('');
       load();
     } catch (err) {
-      showToast('更新失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('更新失败: ' + err.message, 'error');
     }
   };
 
@@ -168,11 +173,12 @@ export default function Dashboard() {
 
   const handleSaveFile = async () => {
     try {
-      await api.writeFile(id, selectedFile.path, fileContent);
+      // Owner operation: modifying prototype files is owner maintenance
+      await guard(id, () => api.writeFile(id, selectedFile.path, fileContent, getOwnerToken(id)));
       showToast('文件已保存');
       setEditing(false);
     } catch (err) {
-      showToast('保存失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('保存失败: ' + err.message, 'error');
     }
   };
 

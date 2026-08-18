@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api } from '../api.js';
+import { api, getOwnerToken } from '../api.js';
+import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
 
 export default function PlanReview() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { guard } = useOwnerAuth();
   const [project, setProject] = useState(null);
   const [plans, setPlans] = useState([]);
   const [selectedPlan, setSelectedPlan] = useState(null);
@@ -39,7 +41,8 @@ export default function PlanReview() {
 
   const handleApproveChange = async (changeId) => {
     try {
-      await api.approveChange(selectedPlan.id, changeId);
+      // Plan review is an owner operation (one-time password per session)
+      await guard(id, () => api.approveChange(selectedPlan.id, changeId, getOwnerToken(id)));
       // Update local state
       const updated = {
         ...selectedPlan,
@@ -50,13 +53,13 @@ export default function PlanReview() {
       setSelectedPlan(updated);
       setPlans(plans.map(p => p.id === updated.id ? updated : p));
     } catch (err) {
-      showToast('操作失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('操作失败: ' + err.message, 'error');
     }
   };
 
   const handleRejectChange = async (changeId) => {
     try {
-      await api.rejectChange(selectedPlan.id, changeId);
+      await guard(id, () => api.rejectChange(selectedPlan.id, changeId, getOwnerToken(id)));
       const updated = {
         ...selectedPlan,
         changes: selectedPlan.changes.map(c =>
@@ -66,7 +69,7 @@ export default function PlanReview() {
       setSelectedPlan(updated);
       setPlans(plans.map(p => p.id === updated.id ? updated : p));
     } catch (err) {
-      showToast('操作失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') showToast('操作失败: ' + err.message, 'error');
     }
   };
 
@@ -80,16 +83,30 @@ export default function PlanReview() {
 
     setApplying(true);
     try {
-      const result = await api.applyPlan(selectedPlan.id);
+      // Applying a plan rewrites prototype files and redeploys — owner operation.
+      // Failure semantics: if any change cannot be applied, the backend answers
+      // HTTP 409 and this falls into the catch below — we stay on the page,
+      // show the concrete error and let the owner fix/reject the failing change
+      // and retry. If only the redeploy failed (HTTP 200 + success:false) the
+      // files WERE changed, so we report the deploy issue distinctly.
+      const result = await guard(id, () => api.applyPlan(selectedPlan.id, getOwnerToken(id)));
       if (result.success) {
         showToast(`成功应用 ${result.appliedCount} 条修改，原型已重新部署`);
+        load();
+        navigate(`/project/${id}`);
+      } else if ((result.appliedCount || 0) > 0) {
+        showToast(`修改已应用，但重新部署失败: ${result.deployError || result.errors?.[0] || '未知错误'}`, 'error');
+        load();
       } else {
-        showToast(`应用完成，但有 ${result.errorCount} 个错误: ${result.errors?.join('; ')}`, 'error');
+        showToast(`应用失败: ${result.errors?.join('; ') || '未知错误'}`, 'error');
+        load();
       }
-      load();
-      navigate(`/project/${id}`);
     } catch (err) {
-      showToast('应用失败: ' + err.message, 'error');
+      if (err.message !== 'owner verification cancelled') {
+        showToast(`应用失败: ${err.message}${err.errors?.length ? `（${err.errors.length} 条建议未通过）` : ''}`, 'error');
+        // 失败后刷新：失败的修改会回退为「已通过」，可修正/驳回后重试
+        load();
+      }
     } finally {
       setApplying(false);
     }
