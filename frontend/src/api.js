@@ -123,6 +123,7 @@ export const api = {
   approveChange: (planId, changeId, ownerToken) => request(`/projects/plans/${planId}/changes/${changeId}/approve`, { method: 'POST', ownerToken }),
   rejectChange: (planId, changeId, ownerToken) => request(`/projects/plans/${planId}/changes/${changeId}/reject`, { method: 'POST', ownerToken }),
   applyPlan: (planId, ownerToken) => request(`/projects/plans/${planId}/apply`, { method: 'POST', ownerToken }),
+  rollbackPlan: (planId, ownerToken) => request(`/projects/plans/${planId}/rollback`, { method: 'POST', ownerToken }),
 
   // Health
   health: () => request('/health'),

@@ -14,6 +14,7 @@ export default function PlanReview() {
   const [applying, setApplying] = useState(false);
   const [toast, setToast] = useState(null);
   const [regenerateBanner, setRegenerateBanner] = useState(null);
+  const [rollingBack, setRollingBack] = useState(false);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -116,12 +117,38 @@ export default function PlanReview() {
       }
     } catch (err) {
       if (err.message !== 'owner verification cancelled') {
-        showToast(`应用失败: ${err.message}${err.errors?.length ? `（${err.errors.length} 条建议未通过）` : ''}`, 'error');
-        // 失败后刷新：失败的修改会回退为「已通过」，可修正/驳回后重试
+        showToast(`应用失败: ${err.message}${err.errors?.length ? `（${err.errors.length} 条建议未通过）` : ''}。已创建快照，可点「回滚到应用前」恢复`, 'error');
+        // 失败后刷新：失败的修改会回退为「已通过」，可修正/驳回后重试；
+        // 快照已生成，rollback_available 会置真并显示回滚按钮
         load();
       }
     } finally {
       setApplying(false);
+    }
+  };
+
+  // Roll back to the pre-apply snapshot (regression snapshot). Restores every
+  // file the apply touched, resets applied changes to approved and redeploys.
+  const handleRollback = async () => {
+    if (!confirm('⚠ 确定回滚？\n\n将把该方案上次应用时修改的所有文件恢复到应用前状态（快照），已应用的修改建议会回到「已通过」状态、相关批注重新打开，然后自动重新部署。此操作不可撤销回滚本身。')) return;
+    setRollingBack(true);
+    try {
+      const result = await guard(id, () => api.rollbackPlan(selectedPlan.id, getOwnerToken(id)));
+      if (result.regenerateRequired) {
+        setRegenerateBanner(result.regenerateRequired);
+        showToast(`已回滚 ${result.restoredCount} 个文件，需执行生成器重新生成 HTML 后再部署`, 'error');
+        load();
+      } else if (result.success) {
+        showToast(`已回滚 ${result.restoredCount} 个文件、重置 ${result.changesReset} 条修改建议，原型已重新部署`);
+        load();
+      } else {
+        showToast(`文件已回滚，但重新部署失败: ${result.deployError || result.errors?.[0] || '未知错误'}`, 'error');
+        load();
+      }
+    } catch (err) {
+      if (err.message !== 'owner verification cancelled') showToast('回滚失败: ' + err.message, 'error');
+    } finally {
+      setRollingBack(false);
     }
   };
 
@@ -261,6 +288,17 @@ export default function PlanReview() {
                 </span>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
+                {selectedPlan.rollback_available && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ color: 'var(--red)' }}
+                    onClick={handleRollback}
+                    disabled={rollingBack || applying}
+                    title="恢复该方案上次应用前的文件内容（快照回滚）"
+                  >
+                    {rollingBack ? '回滚中...' : '↩ 回滚到应用前'}
+                  </button>
+                )}
                 <button className="btn btn-primary" onClick={handleApplyPlan} disabled={applying || selectedPlan.status === 'applied'}>
                   {applying ? '应用中...' : '应用已批准的修改'}
                 </button>

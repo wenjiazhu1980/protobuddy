@@ -147,3 +147,12 @@
   - `PlanReview.jsx`：每条修改建议显示预检徽章（✓ 唯一匹配 / ⚠ 警告 / ✕ 未通过 + 原因）；方案摘要卡显示预检横幅（含自动重试说明）；应用确认框对「已批准但预检失败」的条目给出警告。
 - 验证：本地端到端两条路径均过——坏路径（目标文件不存在 → error 正确捕获）、好路径（唯一匹配 → ok, match_count=1）。
 - 部署：protobuddy（overseas, deployment dp37vpupe4we），protobuddy.20140107.xyz 与 protobuddy.edgeone.dev 均已加载新 bundle `index-BBxBgUxR.js`。git 5e44eb4。
+
+## 迭代 26：批注→方案一致性检查
+- 需求：校验生成的方案是否真正回应了批注诉求（此前方案可能通过匹配预检却完全偏离批注意图）。
+- 实现（3 文件）：
+  - 新增 `consistency.js`：纯本地语义粗筛——批注文本对每条 change（description + new_code 摘录）的字符二元组包含率打分；`annotation_id` 直接关联计 0.4；页面文件精确匹配仅在文本分 ≥0.12 时作确认加强（单独不构成证据，避免同页误判）。每条批注输出 covered / weak / uncovered。
+  - `plans.js`：一致性检查与 dry-run 预检共用同一次自动重试（触发：任一 error 或任一未回应批注，仅 Makers 法）；采纳标准先比 error 数再比 uncovered 数；plan 记录新增 `consistency` 汇总+逐批注重果。
+  - `PlanReview.jsx`：摘要卡一致性横幅（红色列出未回应批注原文与处理建议 / 绿色统计），change 头部「批注 #id」徽章。
+- 验证：单测（真实回应→covered、偏离诉求→uncovered 且反馈文本正确）；本地 e2e 规则引擎路径 covered score 0.73/1.0。
+- 部署：protobuddy（overseas, deployment dpsc20zpd10w），两域名均加载 `index-B_XGAt9I.js`。git 5dd7b26。

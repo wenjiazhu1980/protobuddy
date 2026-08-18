@@ -9,6 +9,67 @@ import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
 
+// Redeploy a project after files changed (apply or rollback). Shared so both
+// paths get identical semantics: generator handling (local run vs external
+// regenerateRequired vs force), deployment record, version bump.
+async function triggerRedeploy(plan, req, logLine) {
+  let deployResult = null;
+  let deployError = '';
+  let regenerateRequired = null;
+  const project = await getById('projects', plan.project_id);
+  if (!project) return { deployResult, deployError, regenerateRequired };
+  try {
+    // Option A: before redeploying, check for a Python generator. The change
+    // may have touched the generator script (e.g. phase-2/_gen_pages.py), in
+    // which case HTML must be regenerated first.
+    // - local mode: run the generator automatically, then deploy (full loop)
+    // - blob mode: Python cannot run on the platform -> skip deploy, return
+    //   regenerateRequired so the external CLI (scripts/regenerate.js) does it
+    // - ?force=1: skip the generator check and deploy existing artifacts
+    const gen = await prepareForDeploy(plan.project_id, { force: req.query.force === '1' });
+    if (gen.generator && gen.needsExternal) {
+      regenerateRequired = {
+        script: gen.generator.script,
+        message: gen.message,
+        hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${apiBaseFromReq(req)}`
+      };
+    } else if (gen.generator && gen.ran && !gen.ok) {
+      deployError = `生成器执行失败，未重新部署: ${gen.error}${gen.stderr ? `\n${gen.stderr}` : ''}`;
+    } else {
+      deployResult = await deployToEdgeOne(project);
+      let previewUrl = deployResult.url;
+      if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
+      }
+
+      const version = (project.version || 0) + 1;
+      await insert('deployments', {
+        project_id: plan.project_id,
+        version,
+        url: previewUrl,
+        env: 'production',
+        status: deployResult.success ? 'success' : 'failed',
+        method: deployResult.method,
+        log: `${logLine} ${deployResult.log || ''}`
+      });
+
+      await update('projects', plan.project_id, {
+        current_url: previewUrl,
+        version,
+        status: 'deployed'
+      });
+
+      if (!deployResult.success) {
+        deployError = `重新部署失败: ${deployResult.error || 'unknown error'}`;
+      }
+    }
+  } catch (err) {
+    deployError = `重新部署失败: ${err.message}`;
+  }
+  return { deployResult, deployError, regenerateRequired };
+}
+
 // Generate a plan from open annotations
 router.post('/:id/plan', async (req, res) => {
   const project = await getById('projects', req.params.id);
@@ -291,11 +352,14 @@ router.get('/:id/plans', async (req, res) => {
   const plans = await query('plans', p => String(p.project_id) === String(req.params.id));
   plans.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-  // Attach changes for each plan
+  // Attach changes (and whether a rollback snapshot is still available) for each plan
   const plansWithChanges = [];
   for (const plan of plans) {
     const changes = await query('planChanges', c => String(c.plan_id) === String(plan.id));
-    plansWithChanges.push({ ...plan, changes });
+    const activeSnaps = await query('snapshots', s =>
+      String(s.plan_id) === String(plan.id) && s.status === 'active'
+    );
+    plansWithChanges.push({ ...plan, changes, rollback_available: activeSnaps.length > 0 });
   }
 
   res.json(plansWithChanges);
@@ -307,7 +371,10 @@ router.get('/plans/:planId', async (req, res) => {
   if (!plan) return res.status(404).json({ error: 'Plan not found' });
 
   const changes = await query('planChanges', c => String(c.plan_id) === String(plan.id));
-  res.json({ ...plan, changes });
+  const activeSnaps = await query('snapshots', s =>
+    String(s.plan_id) === String(req.params.planId) && s.status === 'active'
+  );
+  res.json({ ...plan, changes, rollback_available: activeSnaps.length > 0 });
 });
 
 // Approve/reject a plan (overall) — plan review is an owner operation
@@ -374,6 +441,30 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
   if (changes.length === 0) {
     return res.status(400).json({ error: 'No approved changes to apply' });
   }
+
+  // Regression snapshot: capture the CURRENT content of every file this apply
+  // will touch BEFORE any write, so the owner can roll the whole apply back
+  // with one click if files end up half-applied or the visual result is wrong.
+  // Best-effort per file; binary files are skipped (apply rejects them anyway).
+  const targetPaths = [...new Set(changes.map(c => c.file_path))];
+  const snapshotFiles = [];
+  for (const p of targetPaths) {
+    try {
+      const c = await readFileContent(plan.project_id, p);
+      if (c && !c.binary) snapshotFiles.push({ path: p, content: c.data });
+    } catch (err) {
+      console.warn(`[plans] Snapshot skipped for ${p}: ${err.message}`);
+    }
+  }
+  const snapshot = snapshotFiles.length > 0
+    ? await insert('snapshots', {
+        plan_id: req.params.planId,
+        project_id: plan.project_id,
+        status: 'active',
+        files: snapshotFiles
+      })
+    : null;
+  if (snapshot) console.log(`[plans] Snapshot #${snapshot.id} created for plan #${plan.id} (${snapshotFiles.length} files)`);
 
   const appliedChanges = [];
   const failedChanges = [];
@@ -461,59 +552,9 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
   let deployError = '';
   let regenerateRequired = null;
   if (appliedChanges.length > 0) {
-    const project = await getById('projects', plan.project_id);
-    if (project) {
-      try {
-        // 方案 A：重新部署前检查 Python 生成器。apply 修改的可能是生成器脚本
-        // （如 phase-2/_gen_pages.py），必须先重新生成 HTML 再部署。
-        // - local 模式：自动执行生成器后再部署（完整闭环）
-        // - blob 模式：线上无法执行 Python → 跳过部署，返回 regenerateRequired，
-        //   由外部执行环境 CLI（scripts/regenerate.js）完成生成 + 部署
-        // - ?force=1：跳过生成器检查，直接部署现有产物
-        const gen = await prepareForDeploy(plan.project_id, { force: req.query.force === '1' });
-        if (gen.generator && gen.needsExternal) {
-          regenerateRequired = {
-            script: gen.generator.script,
-            message: gen.message,
-            hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${apiBaseFromReq(req)}`
-          };
-        } else if (gen.generator && gen.ran && !gen.ok) {
-          deployError = `生成器执行失败，未重新部署: ${gen.error}${gen.stderr ? `\n${gen.stderr}` : ''}`;
-        } else {
-          deployResult = await deployToEdgeOne(project);
-          let previewUrl = deployResult.url;
-          if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
-            const baseUrl = `${req.protocol}://${req.get('host')}`;
-            // In Makers Cloud Functions the API is a plain onRequest function
-            // mounted at /api (not /express); locally it is /api too.
-            previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
-          }
-
-          const version = (project.version || 0) + 1;
-          await insert('deployments', {
-            project_id: plan.project_id,
-            version,
-            url: previewUrl,
-            env: 'production',
-            status: deployResult.success ? 'success' : 'failed',
-            method: deployResult.method,
-            log: `Applied plan #${plan.id}: ${appliedChanges.length} changes. ${deployResult.log || ''}`
-          });
-
-          await update('projects', plan.project_id, {
-            current_url: previewUrl,
-            version,
-            status: 'deployed'
-          });
-
-          if (!deployResult.success) {
-            deployError = `重新部署失败: ${deployResult.error || 'unknown error'}`;
-          }
-        }
-      } catch (err) {
-        deployError = `重新部署失败: ${err.message}`;
-      }
-    }
+    ({ deployResult, deployError, regenerateRequired } = await triggerRedeploy(
+      plan, req, `Applied plan #${plan.id}: ${appliedChanges.length} changes.`
+    ));
   }
 
   // Response semantics:
@@ -535,13 +576,89 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
     deployError: deployError || undefined,
     deploySkipped: !!regenerateRequired,
     regenerateRequired: regenerateRequired || undefined,
-    deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null
+    deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null,
+    snapshot_id: snapshot ? snapshot.id : undefined
   };
 
   if (!allChangesApplied) {
-    return res.status(409).json({ ...body, error: errors[0] || '应用修改失败' });
+    return res.status(409).json({
+      ...body,
+      error: errors[0] || '应用修改失败',
+      rollback_hint: snapshot
+        ? `已创建快照 #${snapshot.id}，可通过 /api/plans/${req.params.planId}/rollback 一键回滚到应用前状态`
+        : undefined
+    });
   }
   res.json(body);
+});
+
+// Roll back to the pre-apply snapshot — owner operation. Restores every file
+// captured in the plan's latest ACTIVE snapshot, flips applied changes back to
+// 'approved' (so they can be fixed and re-applied), reopens annotations that
+// were resolved by the apply, marks the snapshot consumed, and redeploys.
+router.post('/plans/:planId/rollback', requireOwnerAuth, async (req, res) => {
+  const plan = await getById('plans', req.params.planId);
+  if (!plan) return res.status(404).json({ error: 'Plan not found' });
+
+  const snaps = await query('snapshots', s =>
+    String(s.plan_id) === String(req.params.planId) && s.status === 'active'
+  );
+  if (snaps.length === 0) {
+    return res.status(400).json({ error: '该方案没有可用的回滚快照' });
+  }
+  snaps.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const snapshot = snaps[0];
+
+  // Restore file contents first — this is the core of the rollback.
+  const errors = [];
+  let restored = 0;
+  for (const f of (snapshot.files || [])) {
+    try {
+      const wrote = await writeFileContent(plan.project_id, f.path, f.content);
+      if (!wrote) errors.push(`写入文件失败: ${f.path}（存储驱动未确认写入）`);
+      else restored++;
+    } catch (err) {
+      errors.push(`恢复 ${f.path} 时出错: ${err.message}`);
+    }
+  }
+  if (restored === 0) {
+    return res.status(500).json({ error: errors.join('; ') || '回滚失败：未恢复任何文件' });
+  }
+
+  // Reset state so the plan is re-workable: applied changes -> approved,
+  // annotations the apply resolved -> open again, plan -> approved.
+  const changed = await query('planChanges', c =>
+    String(c.plan_id) === String(req.params.planId) && c.status === 'applied'
+  );
+  for (const c of changed) {
+    await update('planChanges', c.id, { status: 'approved' });
+    if (c.annotation_id) {
+      await update('annotations', c.annotation_id, { status: 'open' });
+    }
+  }
+  await update('plans', req.params.planId, { status: 'approved' });
+  await update('snapshots', snapshot.id, {
+    status: 'rolled_back',
+    rolled_back_at: new Date().toISOString()
+  });
+  console.log(`[plans] Rolled back plan #${plan.id} to snapshot #${snapshot.id} (${restored}/${snapshot.files.length} files, ${changed.length} changes reset)`);
+
+  // Redeploy the restored content (same semantics as apply, incl. generator
+  // handling and ?force=1).
+  const { deployResult, deployError, regenerateRequired } = await triggerRedeploy(
+    plan, req, `Rolled back plan #${plan.id} to snapshot #${snapshot.id}.`
+  );
+
+  res.json({
+    success: errors.length === 0 && !deployError && !regenerateRequired,
+    restoredCount: restored,
+    changesReset: changed.length,
+    errors,
+    deployError: deployError || undefined,
+    deploySkipped: !!regenerateRequired,
+    regenerateRequired: regenerateRequired || undefined,
+    deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null
+  });
 });
 
 export default router;
