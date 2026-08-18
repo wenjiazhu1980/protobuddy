@@ -289,10 +289,25 @@ export async function getProjectUrl(token, projectId, opts = {}) {
   return fallback;
 }
 
+/** Suffix-based domain priority: domains matching this pattern are preferred over others. */
+const PREFERRED_DOMAIN_SUFFIX = '.20140107.xyz';
+
+/**
+ * Pick the best Pass custom domain, prioritising the configured suffix pattern.
+ * Priority: Pass domain matching *.20140107.xyz → any Pass domain → null.
+ */
+function pickBestCustomDomain(allCustom) {
+  const passDomains = allCustom.filter(d => d.Status === 'Pass');
+  if (passDomains.length === 0) return null;
+  // Prefer domains ending with the suffix (e.g. cis2.20140107.xyz)
+  const preferred = passDomains.find(d => (d.Domain || '').toLowerCase().endsWith(PREFERRED_DOMAIN_SUFFIX));
+  return preferred || passDomains[0];
+}
+
 /** Resolve URL from any Pass custom domain or preset domain (extracted helper). */
 async function resolvePresetOrAnyCustom(token, proj, allCustom) {
-  const anyPass = allCustom.find(d => d.Status === 'Pass');
-  if (anyPass) return { url: `https://${anyPass.Domain}` };
+  const best = pickBestCustomDomain(allCustom);
+  if (best) return { url: `https://${best.Domain}` };
 
   const domain = proj.PresetDomain;
   if (!domain) throw new Error('Project has no PresetDomain');
