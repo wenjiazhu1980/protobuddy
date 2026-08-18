@@ -193,7 +193,11 @@ Generate a modification plan in JSON format.`;
       ],
       // Reasoning models spend tokens on `reasoning_content` first; give them
       // more room so the final JSON content is not truncated.
-      max_tokens: isReasoningModel ? 6000 : 4000,
+      // Reasoning models spend tokens on `reasoning_content` first; the JSON
+      // output shares the same max_tokens budget. If reasoning consumes most
+      // of it, the JSON content gets truncated → parse failure → empty changes.
+      // 8000 gives enough room for reasoning + structured JSON output.
+      max_tokens: isReasoningModel ? 8000 : 4000,
       response_format: { type: 'json_object' }
     };
     if (!isReasoningModel) {
@@ -239,7 +243,16 @@ Generate a modification plan in JSON format.`;
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
+    const finishReason = data.choices?.[0]?.finish_reason || '';
+    const reasoningContent = data.choices?.[0]?.message?.reasoning_content || '';
     const usage = data.usage;
+
+    // Empty content → reasoning likely consumed the entire max_tokens budget.
+    // Throw so the catch block generates a rule-based fallback.
+    if (!content || content.trim().length === 0) {
+      console.warn(`[makersModels] Empty content from model. finish_reason=${finishReason}, reasoning length=${reasoningContent.length}, usage=${JSON.stringify(usage)}`);
+      throw new Error(`模型返回空内容（finish_reason=${finishReason}）。推理模型可能因 reasoning 耗尽 token 预算导致 JSON 输出被截断。建议换用非推理模型（@makers/hy3）或减少批注数量。`);
+    }
 
     // Try to parse JSON from the response
     let planData;
@@ -256,17 +269,19 @@ Generate a modification plan in JSON format.`;
       const jsonMatch = clean.match(/\{[\s\S]*\}/);
       planData = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
     } catch (parseErr) {
-      console.warn('[makersModels] Failed to parse JSON response, using as plain text');
-      planData = {
-        summary: content.slice(0, 500),
-        changes: []
-      };
+      // DO NOT swallow as empty plan — throw so catch block generates
+      // rule-based fallback with a useful reason.
+      console.warn(`[makersModels] Failed to parse JSON (finish_reason=${finishReason}). Content preview: ${content.slice(0, 300)}`);
+      throw new Error(`模型返回内容无法解析为 JSON（finish_reason=${finishReason}，内容前 300 字符: ${content.slice(0, 300)}）。`);
     }
 
     // Normalize changes
     const changes = Array.isArray(planData.changes) ? planData.changes : [];
     if (changes.length === 0 && annotations.length > 0) {
-      console.warn('[makersModels] Model returned no changes; plan may be incomplete.');
+      // Model returned valid JSON but zero changes despite having annotations.
+      // Throw so the catch block falls back to rule-based generation.
+      console.warn(`[makersModels] Model returned 0 changes for ${annotations.length} annotation(s). summary=${planData.summary || '(none)'}`);
+      throw new Error(`模型返回的修改建议为空（0 条 changes），但存在 ${annotations.length} 条待处理批注。可能原因：max_tokens 不足导致输出被截断，或模型未能理解批注内容。`);
     }
 
     return {

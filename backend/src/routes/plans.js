@@ -336,6 +336,27 @@ router.post('/:id/plan', async (req, res) => {
     console.log(`[plans] Skipping auto-retry: only ${Math.round((120000 - elapsedMs) / 1000)}s budget left (first gen took ${Math.round(elapsedMs / 1000)}s), would exceed 120s CF timeout`);
   }
 
+  // ---- Final safety net: if all attempts produced 0 changes, use rule-based ----
+  // This catches edge cases where the model returned valid JSON with empty changes
+  // (e.g. max_tokens truncation, reasoning consumed all output budget) and the
+  // in-function catch in makersModels.js didn't fire because the API call itself
+  // succeeded. Without this, the user gets a plan with 0 changes — useless.
+  if (rawChanges.length === 0 && annotations.length > 0) {
+    console.warn(`[plans] All generation attempts produced 0 changes for ${annotations.length} annotation(s). Falling back to rule-based plan.`);
+    const fbResult = generateRuleBasedPlan(annotations, filesWithContent);
+    rawChanges = normalizeChanges(fbResult.plan.changes);
+    validations = await precheckChanges(rawChanges);
+    consistency = checkConsistency(annotations, rawChanges);
+    result = {
+      ...fbResult,
+      method: 'rule-based',
+      fallbackReason: result.fallbackReason
+        ? `${result.fallbackReason}; 模型返回空 changes，使用规则引擎兜底`
+        : '模型返回空 changes，使用规则引擎兜底'
+    };
+    console.log(`[plans] Rule-based fallback generated ${rawChanges.length} changes`);
+  }
+
   const errorCount = validations.filter(v => v.status === 'error').length;
   const warnCount = validations.filter(v => v.status === 'warn').length;
   const precheck = {
