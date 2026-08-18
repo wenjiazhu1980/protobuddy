@@ -132,3 +132,15 @@ export const api = {
 export function getPreviewUrl(projectId, baseUrl = '') {
   return `${baseUrl}${API_BASE}/projects/${projectId}/preview/`;
 }
+
+/**
+ * 构造「外部执行环境重新生成」的 CLI 命令（供前端复制）。
+ * 优先用浏览器当前 origin（一定是对外可访问的公共 host）拼接；
+ * 服务端 hint 在 EdgeOne 上可能拿到内部 SCF host（含 qcloudteo.com 标记），
+ * 仅在本地 dev（无内部标记）时使用，保证用户复制到的命令始终可执行。
+ */
+export function buildRegenerateCmd(projectId, serverHint) {
+  if (serverHint && !/qcloudteo|pages-scf/i.test(serverHint)) return serverHint;
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return `node scripts/regenerate.js --project ${projectId} --api ${origin}`;
+}

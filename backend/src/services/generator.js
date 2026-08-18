@@ -255,3 +255,19 @@ export async function readGeneratorScript(projectId, script, maxChars = 20000) {
   if (!content || content.binary) return null;
   return content.data.slice(0, maxChars);
 }
+
+/**
+ * 从请求推导对外可访问的 API 基址（供 regenerate hint 使用）。
+ * EdgeOne Pages 平台实测（_debug/headers）：`host` 被重写为内部 SCF host
+ * （pages-scf-*.qcloudteo.com），公共 host 放在 `eo-pages-host` 头；
+ * 无 x-forwarded-proto/x-forwarded-host。取头顺序：
+ *   host: eo-pages-host > x-forwarded-host > req host > localhost
+ *   proto: 有 eo-pages-host 时必为 https，否则 x-forwarded-proto > req.protocol > http
+ * 本地 dev 无转发头时回退 req 自身值。
+ */
+export function apiBaseFromReq(req) {
+  const eoHost = req.headers['eo-pages-host'];
+  const proto = eoHost ? 'https' : (req.headers['x-forwarded-proto'] || req.protocol || 'http');
+  const host = eoHost || req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3001';
+  return `${proto}://${host}`;
+}

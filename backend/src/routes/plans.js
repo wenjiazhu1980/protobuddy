@@ -3,7 +3,7 @@ import { getById, query, insert, update } from '../db.js';
 import { generatePlanWithMakers } from '../services/makersModels.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
-import { prepareForDeploy } from '../services/generator.js';
+import { prepareForDeploy, apiBaseFromReq } from '../services/generator.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
@@ -314,7 +314,7 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
           regenerateRequired = {
             script: gen.generator.script,
             message: gen.message,
-            hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${req.protocol}://${req.get('host')}`
+            hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${apiBaseFromReq(req)}`
           };
         } else if (gen.generator && gen.ran && !gen.ok) {
           deployError = `生成器执行失败，未重新部署: ${gen.error}${gen.stderr ? `\n${gen.stderr}` : ''}`;

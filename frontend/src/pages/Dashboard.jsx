@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api, getOwnerToken } from '../api.js';
+import { api, getOwnerToken, buildRegenerateCmd } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
 
 export default function Dashboard() {
@@ -287,20 +287,23 @@ export default function Dashboard() {
               <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)' }}>
                 {regenerateInfo.regenerateRequired.message}
               </div>
-              {regenerateInfo.regenerateRequired.hint && (
-                <div className="regenerate-cmd">
-                  <code>{regenerateInfo.regenerateRequired.hint}</code>
-                  <button
-                    className="btn btn-sm btn-secondary"
-                    onClick={() => {
-                      navigator.clipboard?.writeText(regenerateInfo.regenerateRequired.hint);
-                      showToast('命令已复制');
-                    }}
-                  >
-                    复制命令
-                  </button>
-                </div>
-              )}
+              {regenerateInfo.regenerateRequired.hint && (() => {
+                const cmd = buildRegenerateCmd(id, regenerateInfo.regenerateRequired.hint);
+                return (
+                  <div className="regenerate-cmd">
+                    <code>{cmd}</code>
+                    <button
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(cmd);
+                        showToast('命令已复制');
+                      }}
+                    >
+                      复制命令
+                    </button>
+                  </div>
+                );
+              })()}
               <div style={{ marginTop: 8 }}>
                 <button
                   className="btn btn-sm btn-secondary"

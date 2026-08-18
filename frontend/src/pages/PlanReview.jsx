@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { api, getOwnerToken } from '../api.js';
+import { api, getOwnerToken, buildRegenerateCmd } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
 
 export default function PlanReview() {
@@ -165,20 +165,23 @@ export default function PlanReview() {
           <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)' }}>
             {regenerateBanner.message}
           </div>
-          {regenerateBanner.hint && (
-            <div className="regenerate-cmd">
-              <code>{regenerateBanner.hint}</code>
-              <button
-                className="btn btn-sm btn-secondary"
-                onClick={() => {
-                  navigator.clipboard?.writeText(regenerateBanner.hint);
-                  showToast('命令已复制');
-                }}
-              >
-                复制命令
-              </button>
-            </div>
-          )}
+          {regenerateBanner.hint && (() => {
+            const cmd = buildRegenerateCmd(id, regenerateBanner.hint);
+            return (
+              <div className="regenerate-cmd">
+                <code>{cmd}</code>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(cmd);
+                    showToast('命令已复制');
+                  }}
+                >
+                  复制命令
+                </button>
+              </div>
+            );
+          })()}
         </div>
       )}
 

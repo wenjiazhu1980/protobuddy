@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getById, insert, update, query } from '../db.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
-import { prepareForDeploy, probeGeneratorEnv } from '../services/generator.js';
+import { prepareForDeploy, probeGeneratorEnv, apiBaseFromReq } from '../services/generator.js';
 import { checkDeployment, getProjectUrl } from '../services/makersApi.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
@@ -27,7 +27,7 @@ router.post('/:id/deploy', requireOwnerAuth, async (req, res) => {
         generator: { script: gen.generator.script },
         message: gen.message,
         error: gen.message,
-        hint: `node scripts/regenerate.js --project ${req.params.id} --api ${req.protocol}://${req.get('host')}`
+        hint: `node scripts/regenerate.js --project ${req.params.id} --api ${apiBaseFromReq(req)}`
       });
     }
     if (gen.generator && gen.ran && !gen.ok) {
