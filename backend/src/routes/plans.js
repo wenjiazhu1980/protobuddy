@@ -300,6 +300,50 @@ router.post('/:id/plan', async (req, res) => {
     warn_count: warnCount,
     retried
   };
+  // ---- Plan scorecard -------------------------------------------------------
+  // Composite quality score (0-100) computed from data we already have:
+  //   path compliance (paths point at real files)          weight 20
+  //   match quality (dry-run old_code unique match)        weight 30
+  //   annotation consistency (covered/weak/uncovered)      weight 25
+  //   description completeness (>=10 chars, actionable)    weight 10
+  //   change clarity (old_code+new_code, not blind append) weight 15
+  // Purely local — no extra API calls. Plans scoring below 70 (or containing
+  // any precheck error) are flagged needs_review so the reviewer knows where
+  // to spend attention first.
+  const computeScorecard = (rawChanges, validations, consistencyData, paths) => {
+    const n = rawChanges.length || 1;
+    const ratio = (num) => Math.round((num / n) * 100) / 100;
+    const pathScore = ratio(rawChanges.filter(c => paths.has(c.file_path)).length);
+    const matchScore = ratio(validations.reduce(
+      (s, v) => s + (v.status === 'ok' ? 1 : v.status === 'warn' ? 0.5 : 0), 0
+    ));
+    const consN = consistencyData.checked || 1;
+    const consScore = Math.round((
+      ((consistencyData.covered_count || 0) + 0.5 * (consistencyData.weak_count || 0)) / consN
+    ) * 100) / 100;
+    const descScore = ratio(rawChanges.filter(c => (c.description || '').trim().length >= 10).length);
+    const clarityScore = ratio(rawChanges.filter(c => c.old_code && c.new_code).length);
+
+    const dims = [
+      { key: 'path', label: '路径合规', score: pathScore, weight: 20, detail: `${Math.round(pathScore * rawChanges.length)}/${rawChanges.length} 条修改指向真实文件` },
+      { key: 'match', label: '匹配质量', score: matchScore, weight: 30, detail: `${validations.filter(v => v.status === 'ok').length} 唯一匹配 / ${validations.filter(v => v.status === 'warn').length} 警告 / ${validations.filter(v => v.status === 'error').length} 未通过` },
+      { key: 'consistency', label: '批注一致性', score: consScore, weight: 25, detail: `已回应 ${consistencyData.covered_count || 0} / 较弱 ${consistencyData.weak_count || 0} / 未回应 ${consistencyData.uncovered_count || 0}` },
+      { key: 'description', label: '描述完整性', score: descScore, weight: 10, detail: `${Math.round(descScore * rawChanges.length)}/${rawChanges.length} 条描述清晰（≥10字）` },
+      { key: 'clarity', label: '变更明确性', score: clarityScore, weight: 15, detail: `${Math.round(clarityScore * rawChanges.length)}/${rawChanges.length} 条为精确替换（非追加）` }
+    ];
+    const score = Math.round(dims.reduce((s, d) => s + d.score * d.weight, 0));
+    const hasError = validations.some(v => v.status === 'error');
+    const grade = score >= 85 ? 'good' : score >= 70 ? 'fair' : 'poor';
+    return {
+      score,
+      grade,
+      needs_review: score < 70 || hasError,
+      dimensions: dims
+    };
+  };
+  const scorecard = computeScorecard(rawChanges, validations, consistency, knownPaths);
+  console.log(`[plans] Scorecard: ${scorecard.score}/100 (${scorecard.grade}${scorecard.needs_review ? ', NEEDS REVIEW' : ''})`);
+
   console.log(`[plans] Dry-run precheck: ${precheck.passed ? 'PASSED' : 'FAILED'} (${errorCount} error, ${warnCount} warn, retried=${retried})`);
   console.log(`[plans] Consistency check: ${consistency.covered_count} covered / ${consistency.weak_count} weak / ${consistency.uncovered_count} uncovered`);
 
@@ -321,7 +365,8 @@ router.post('/:id/plan', async (req, res) => {
     model: result.model || '',
     fallback_reason: result.fallbackReason || '',
     precheck,
-    consistency
+    consistency,
+    scorecard
   });
 
   // Create plan change records (with per-change dry-run validation attached).

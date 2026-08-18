@@ -156,3 +156,13 @@
   - `PlanReview.jsx`：摘要卡一致性横幅（红色列出未回应批注原文与处理建议 / 绿色统计），change 头部「批注 #id」徽章。
 - 验证：单测（真实回应→covered、偏离诉求→uncovered 且反馈文本正确）；本地 e2e 规则引擎路径 covered score 0.73/1.0。
 - 部署：protobuddy（overseas, deployment dpsc20zpd10w），两域名均加载 `index-B_XGAt9I.js`。git 5dd7b26。
+
+## 迭代 27：回归快照与一键回滚
+- 需求：apply 前自动保存文件快照；应用失败或线上效果不对时可一键恢复到应用前状态。
+- 实现：
+  - apply 前对去重后的目标文件集合逐个快照到新表 `snapshots`（二进制跳过）；响应带 `snapshot_id`，409 带 `rollback_hint`。
+  - 新端点 `POST /api/plans/:planId/rollback`（owner）：恢复最新 active 快照的全部文件 → applied 修改回「已通过」→ 被解决批注重新打开 → plan 回 approved → 快照标记 rolled_back（一次性，二次回滚 400）→ 自动重新部署（支持 ?force=1，与 apply 共用抽取出的 `triggerRedeploy`，生成器/regenerateRequired 语义不变）。
+  - 方案列表/详情附加 `rollback_available`。
+  - 前端：摘要卡红色「↩ 回滚到应用前」按钮（确认警告 + 回滚中状态 + regenerate 横幅复用）；apply 失败 toast 指引回滚。
+- 验证（本地 e2e 全闭环）：apply（快照 #10030 创建、文件被修改、批注 resolved）→ rollback（restoredCount=1、changesReset=1、重新部署）→ 文件恢复原状、批注 open、plan/change 均 approved、rollback_available=false、二次回滚 400。
+- 部署：protobuddy（overseas, deployment dpl3olq6fo8m），两域名均加载 `index-D1AQEJKk.js`。git 9c6424f。

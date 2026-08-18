@@ -257,6 +257,18 @@ export default function PlanReview() {
                 onClick={() => setSelectedPlan(p)}
               >
                 方案 #{p.id} · {planStatusBadge(p.status)} · {new Date(p.created_at).toLocaleDateString('zh-CN')}
+                {p.scorecard && (
+                  <span
+                    style={{
+                      marginLeft: 4, padding: '1px 6px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                      background: p.scorecard.needs_review ? 'rgba(220,38,38,0.15)' : p.scorecard.grade === 'good' ? 'rgba(22,163,74,0.15)' : 'rgba(217,119,6,0.15)',
+                      color: p.scorecard.needs_review ? 'var(--red)' : p.scorecard.grade === 'good' ? 'var(--green)' : '#b45309'
+                    }}
+                    title={p.scorecard.needs_review ? '评分卡标记为需重点审查' : `质量评分 ${p.scorecard.score}/100`}
+                  >
+                    {p.scorecard.score}分{p.scorecard.needs_review ? ' ⚠' : ''}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -308,6 +320,46 @@ export default function PlanReview() {
               <div style={{ marginBottom: 12 }}>
                 <strong>摘要：</strong> {selectedPlan.summary}
               </div>
+              {selectedPlan.scorecard && (
+                <div style={{
+                  marginBottom: 12, padding: 12, borderRadius: 6, fontSize: 12,
+                  background: selectedPlan.scorecard.needs_review ? '#fef2f2' : selectedPlan.scorecard.grade === 'good' ? '#f0fdf4' : '#fffbeb',
+                  border: `1px solid ${selectedPlan.scorecard.needs_review ? '#fca5a5' : selectedPlan.scorecard.grade === 'good' ? '#86efac' : '#fcd34d'}`,
+                  color: selectedPlan.scorecard.needs_review ? '#7f1d1d' : selectedPlan.scorecard.grade === 'good' ? '#14532d' : '#78350f'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                    <span style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      minWidth: 52, height: 36, borderRadius: 8,
+                      background: 'rgba(0,0,0,0.06)', fontWeight: 700, fontSize: 18
+                    }}>
+                      {selectedPlan.scorecard.score}
+                    </span>
+                    <div>
+                      <strong>
+                        {selectedPlan.scorecard.needs_review
+                          ? '✕ 需重点审查'
+                          : selectedPlan.scorecard.grade === 'good' ? '✓ 质量良好' : '⚠ 质量一般'}
+                      </strong>
+                      <div style={{ opacity: 0.85 }}>方案质量评分卡（0-100，综合路径/匹配/一致性/描述/明确性）</div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '4px 16px' }}>
+                    {selectedPlan.scorecard.dimensions?.map(d => (
+                      <div key={d.key} style={{ display: 'flex', alignItems: 'center', gap: 6 }} title={d.detail}>
+                        <span style={{ width: 62, flexShrink: 0 }}>{d.label}</span>
+                        <div style={{ flex: 1, height: 6, borderRadius: 3, background: 'rgba(0,0,0,0.12)', overflow: 'hidden' }}>
+                          <div style={{
+                            width: `${Math.round(d.score * 100)}%`, height: '100%',
+                            background: d.score >= 0.8 ? 'var(--green)' : d.score >= 0.5 ? '#f59e0b' : 'var(--red)'
+                          }} />
+                        </div>
+                        <span style={{ width: 26, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{Math.round(d.score * 100)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {selectedPlan.method !== 'makers' && selectedPlan.fallback_reason && (
                 <div style={{ marginBottom: 12, padding: 10, background: '#fff7ed', border: '1px solid #fdba74', borderRadius: 6, fontSize: 12, color: '#7c2d12' }}>
                   <strong>⚠ 本次使用了规则引擎兜底：</strong> {selectedPlan.fallback_reason}
