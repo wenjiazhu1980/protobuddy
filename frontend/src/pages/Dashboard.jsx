@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [manualUrl, setManualUrl] = useState('');
   const [showManualUrl, setShowManualUrl] = useState(false);
   const [lastDeploy, setLastDeploy] = useState(null);
+  const [regenerateInfo, setRegenerateInfo] = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -130,8 +131,32 @@ export default function Dashboard() {
         error: result.error,
         created_at: new Date().toISOString()
       });
-      if (result.success) {
+      if (result.regenerateRequired) {
+        // 方案 A：项目含 Python 生成器脚本，线上环境无法执行 → 提示使用外部
+        // 执行环境 CLI 重新生成后再部署（避免部署旧 HTML）。
+        setRegenerateInfo(result);
+        showToast('检测到 Python 生成器：需先重新生成 HTML 再部署', 'error');
+      } else if (result.success) {
         showToast(`部署成功 (${result.method === 'edgeone' ? 'EdgeOne' : result.method === 'edgeone_manual' ? 'EdgeOne（手动）' : result.method === 'cloud_preview' ? 'EdgeOne 全栈' : '本地托管'} v${result.version})`);
+      } else {
+        showToast('部署失败: ' + (result.error || '未知错误'), 'error');
+      }
+      load();
+    } catch (err) {
+      if (err.message !== 'owner verification cancelled') showToast('部署失败: ' + err.message, 'error');
+    } finally {
+      setDeploying(false);
+    }
+  };
+
+  const handleForceDeploy = async () => {
+    if (!confirm('确定跳过生成器检查，直接部署当前存储中的产物？如果生成器脚本已被修改但未重新生成，部署的将是旧版本 HTML。')) return;
+    setDeploying(true);
+    try {
+      const result = await guard(id, () => api.deploy(id, getOwnerToken(id), true));
+      setRegenerateInfo(null);
+      if (result.success) {
+        showToast(`已强制部署 (v${result.version})`);
       } else {
         showToast('部署失败: ' + (result.error || '未知错误'), 'error');
       }
@@ -254,6 +279,39 @@ export default function Dashboard() {
           </div>
         </div>
         <div className="card-body">
+          {regenerateInfo && regenerateInfo.regenerateRequired && (
+            <div className="regenerate-banner" style={{ marginBottom: 12 }}>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+                ⚠ 检测到 Python 生成器，需重新生成 HTML 后才能部署
+              </div>
+              <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)' }}>
+                {regenerateInfo.regenerateRequired.message}
+              </div>
+              {regenerateInfo.regenerateRequired.hint && (
+                <div className="regenerate-cmd">
+                  <code>{regenerateInfo.regenerateRequired.hint}</code>
+                  <button
+                    className="btn btn-sm btn-secondary"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(regenerateInfo.regenerateRequired.hint);
+                      showToast('命令已复制');
+                    }}
+                  >
+                    复制命令
+                  </button>
+                </div>
+              )}
+              <div style={{ marginTop: 8 }}>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={handleForceDeploy}
+                  disabled={deploying}
+                >
+                  {deploying ? '部署中...' : '仍要部署现有产物（跳过生成器检查）'}
+                </button>
+              </div>
+            </div>
+          )}
           {project.current_url ? (
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>

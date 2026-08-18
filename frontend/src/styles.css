@@ -642,6 +642,34 @@ button {
   50% { opacity: 0.4; }
 }
 
+/* 方案 A：Python 生成器外部执行提示条 */
+.regenerate-banner {
+  background: #fff7ed;
+  border: 1px solid #fdba74;
+  border-left: 4px solid var(--orange, #f97316);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+.regenerate-cmd {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.regenerate-cmd code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  color: #78350f;
+  border-radius: 4px;
+  padding: 6px 10px;
+  word-break: break-all;
+  flex: 1;
+  min-width: 200px;
+}
+
 @media (max-width: 768px) {
   .plan-ready-banner {
     left: 12px;

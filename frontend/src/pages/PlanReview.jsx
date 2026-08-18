@@ -13,6 +13,7 @@ export default function PlanReview() {
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
   const [toast, setToast] = useState(null);
+  const [regenerateBanner, setRegenerateBanner] = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -90,7 +91,13 @@ export default function PlanReview() {
       // and retry. If only the redeploy failed (HTTP 200 + success:false) the
       // files WERE changed, so we report the deploy issue distinctly.
       const result = await guard(id, () => api.applyPlan(selectedPlan.id, getOwnerToken(id)));
-      if (result.success) {
+      if (result.regenerateRequired) {
+        // 方案 A：修改已写入存储，但项目含 Python 生成器脚本，线上无法执行 →
+        // 保留本页并展示外部执行指引，不误报"部署成功"。
+        setRegenerateBanner(result.regenerateRequired);
+        showToast(`修改已应用（${result.appliedCount} 条），需执行生成器重新生成 HTML 后再部署`, 'error');
+        load();
+      } else if (result.success) {
         showToast(`成功应用 ${result.appliedCount} 条修改，原型已重新部署`);
         load();
         navigate(`/project/${id}`);
@@ -148,6 +155,32 @@ export default function PlanReview() {
         </div>
         <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/review`)}>← 返回评审</button>
       </div>
+
+      {/* 方案 A：生成器外部执行提示条 */}
+      {regenerateBanner && (
+        <div className="regenerate-banner" style={{ marginBottom: 16 }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>
+            ⚠ 修改已应用，但需要重新生成原型后再部署
+          </div>
+          <div style={{ fontSize: 12, lineHeight: 1.6, color: 'var(--text-muted)' }}>
+            {regenerateBanner.message}
+          </div>
+          {regenerateBanner.hint && (
+            <div className="regenerate-cmd">
+              <code>{regenerateBanner.hint}</code>
+              <button
+                className="btn btn-sm btn-secondary"
+                onClick={() => {
+                  navigator.clipboard?.writeText(regenerateBanner.hint);
+                  showToast('命令已复制');
+                }}
+              >
+                复制命令
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Plan selector */}
       {plans.length > 1 && (

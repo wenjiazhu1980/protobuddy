@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getById, query, insert, update, remove } from '../db.js';
-import { readFileContent, writeFileContent, deleteFile, findEntryPoint, isBinaryFile } from '../services/fileStorage.js';
+import { readFileContent, writeFileContent, deleteFile, findEntryPoint, isBinaryFile, listProjectFiles } from '../services/fileStorage.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
@@ -12,6 +12,17 @@ router.get('/:id/files', async (req, res) => {
 
   const files = await query('files', f => String(f.project_id) === String(req.params.id));
   res.json(files);
+});
+
+// List ALL file paths from the storage driver itself (source of truth; the
+// files table may be incomplete). Used by the external execution CLI
+// (scripts/regenerate.js) to pull the full project.
+router.get('/:id/storage-files', async (req, res) => {
+  const project = await getById('projects', req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+
+  const paths = await listProjectFiles(req.params.id);
+  res.json({ paths });
 });
 
 // Read a single file's content

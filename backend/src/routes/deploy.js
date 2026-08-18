@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getById, insert, update, query } from '../db.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
+import { prepareForDeploy, probeGeneratorEnv } from '../services/generator.js';
 import { checkDeployment, getProjectUrl } from '../services/makersApi.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
@@ -12,6 +13,34 @@ router.post('/:id/deploy', requireOwnerAuth, async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
   try {
+    // 方案 A：部署前检查 Python 生成器。项目含生成器脚本时，必须先重新生成
+    // HTML 再部署，否则部署的是旧产物。
+    // - local 模式：自动执行生成器（改脚本 → 重新生成 → 部署新产物 闭环）
+    // - blob 模式：线上函数无法执行 Python → 返回 regenerateRequired，
+    //   由外部执行环境 CLI（scripts/regenerate.js）完成生成后再部署
+    // - ?force=1：跳过生成器检查（用户确认产物已是最新，如纯上传新 HTML）
+    const gen = await prepareForDeploy(req.params.id, { force: req.query.force === '1' });
+    if (gen.generator && gen.needsExternal) {
+      return res.json({
+        success: false,
+        regenerateRequired: true,
+        generator: { script: gen.generator.script },
+        message: gen.message,
+        error: gen.message,
+        hint: `node scripts/regenerate.js --project ${req.params.id} --api ${req.protocol}://${req.get('host')}`
+      });
+    }
+    if (gen.generator && gen.ran && !gen.ok) {
+      return res.status(409).json({
+        success: false,
+        error: gen.error,
+        generator: { script: gen.generator.script },
+        message: `生成器执行失败：${gen.error}`,
+        stdout: gen.stdout,
+        stderr: gen.stderr
+      });
+    }
+
     const result = await deployToEdgeOne(project);
 
     const version = (project.version || 0) + 1;
@@ -69,7 +98,13 @@ router.post('/:id/deploy', requireOwnerAuth, async (req, res) => {
       version,
       deployment_id: deployment.id,
       error: result.error,
-      log_file: result.logFile
+      log_file: result.logFile,
+      generator: gen.generator ? {
+        script: gen.generator.script,
+        ran: !!gen.ran,
+        forced: !!gen.forced,
+        changedFiles: (gen.changedFiles || []).map(c => `${c.action} ${c.path}`)
+      } : null
     });
   } catch (err) {
     console.error('[deploy] Error:', err);

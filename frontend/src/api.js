@@ -48,6 +48,7 @@ async function request(path, options = {}) {
     // Apply-plan conflicts (409) carry the per-change failure list + deploy error.
     err.errors = data.errors || null;
     err.deployError = data.deployError || '';
+    err.regenerateRequired = data.regenerateRequired || null;
     throw err;
   }
 
@@ -94,8 +95,8 @@ export const api = {
   writeFile: (id, path, content, ownerToken) => request(`/projects/${id}/files`, { method: 'POST', body: { path, content }, ownerToken }),
   deleteFile: (id, filePath, ownerToken) => request(`/projects/${id}/files/${filePath}`, { method: 'DELETE', ownerToken }),
 
-  // Deploy (owner operations)
-  deploy: (id, ownerToken) => request(`/projects/${id}/deploy`, { method: 'POST', ownerToken }),
+  // Deploy (owner operations). force=1 跳过生成器检查（确认产物已最新时使用）
+  deploy: (id, ownerToken, force) => request(`/projects/${id}/deploy${force ? '?force=1' : ''}`, { method: 'POST', ownerToken }),
   deployStatus: (id, depId) => request(`/projects/${id}/deploy-status${depId ? `?dep=${depId}` : ''}`),
   listDeployments: (id) => request(`/projects/${id}/deployments`),
   setPreviewUrl: (id, url, ownerToken) => request(`/projects/${id}/preview-url`, { method: 'POST', body: { url }, ownerToken }),

@@ -3,6 +3,7 @@ import { getById, query, insert, update } from '../db.js';
 import { generatePlanWithMakers } from '../services/makersModels.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
+import { prepareForDeploy } from '../services/generator.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
@@ -297,38 +298,56 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
   // Trigger redeploy — only when at least one change was actually written.
   let deployResult = null;
   let deployError = '';
+  let regenerateRequired = null;
   if (appliedChanges.length > 0) {
     const project = await getById('projects', plan.project_id);
     if (project) {
       try {
-        deployResult = await deployToEdgeOne(project);
-        let previewUrl = deployResult.url;
-        if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
-          const baseUrl = `${req.protocol}://${req.get('host')}`;
-          // In Makers Cloud Functions the API is a plain onRequest function
-          // mounted at /api (not /express); locally it is /api too.
-          previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
-        }
+        // 方案 A：重新部署前检查 Python 生成器。apply 修改的可能是生成器脚本
+        // （如 phase-2/_gen_pages.py），必须先重新生成 HTML 再部署。
+        // - local 模式：自动执行生成器后再部署（完整闭环）
+        // - blob 模式：线上无法执行 Python → 跳过部署，返回 regenerateRequired，
+        //   由外部执行环境 CLI（scripts/regenerate.js）完成生成 + 部署
+        // - ?force=1：跳过生成器检查，直接部署现有产物
+        const gen = await prepareForDeploy(plan.project_id, { force: req.query.force === '1' });
+        if (gen.generator && gen.needsExternal) {
+          regenerateRequired = {
+            script: gen.generator.script,
+            message: gen.message,
+            hint: `node scripts/regenerate.js --project ${plan.project_id} --api ${req.protocol}://${req.get('host')}`
+          };
+        } else if (gen.generator && gen.ran && !gen.ok) {
+          deployError = `生成器执行失败，未重新部署: ${gen.error}${gen.stderr ? `\n${gen.stderr}` : ''}`;
+        } else {
+          deployResult = await deployToEdgeOne(project);
+          let previewUrl = deployResult.url;
+          if (deployResult.method === 'local' || deployResult.method === 'cloud_preview' || !previewUrl) {
+            const baseUrl = `${req.protocol}://${req.get('host')}`;
+            // In Makers Cloud Functions the API is a plain onRequest function
+            // mounted at /api (not /express); locally it is /api too.
+            previewUrl = `${baseUrl}/api/projects/${plan.project_id}/preview/`;
+          }
 
-        const version = (project.version || 0) + 1;
-        await insert('deployments', {
-          project_id: plan.project_id,
-          version,
-          url: previewUrl,
-          env: 'production',
-          status: deployResult.success ? 'success' : 'failed',
-          method: deployResult.method,
-          log: `Applied plan #${plan.id}: ${appliedChanges.length} changes. ${deployResult.log || ''}`
-        });
+          const version = (project.version || 0) + 1;
+          await insert('deployments', {
+            project_id: plan.project_id,
+            version,
+            url: previewUrl,
+            env: 'production',
+            status: deployResult.success ? 'success' : 'failed',
+            method: deployResult.method,
+            log: `Applied plan #${plan.id}: ${appliedChanges.length} changes. ${deployResult.log || ''}`
+          });
 
-        await update('projects', plan.project_id, {
-          current_url: previewUrl,
-          version,
-          status: 'deployed'
-        });
+          await update('projects', plan.project_id, {
+            current_url: previewUrl,
+            version,
+            status: 'deployed'
+          });
 
-        if (!deployResult.success) {
-          deployError = `重新部署失败: ${deployResult.error || 'unknown error'}`;
+          if (!deployResult.success) {
+            deployError = `重新部署失败: ${deployResult.error || 'unknown error'}`;
+          }
         }
       } catch (err) {
         deployError = `重新部署失败: ${err.message}`;
@@ -342,13 +361,19 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
   // - All changes applied but redeploy failed -> HTTP 200 + success:false so
   //   the file edits are not mistaken for a failure, yet the deploy issue is
   //   clearly reported.
+  // - All changes applied, project has a Python generator, and the runtime
+  //   cannot execute it (blob mode) -> HTTP 200 + success:true + appliedCount,
+  //   but deploySkipped:true + regenerateRequired so the UI routes the owner to
+  //   the external execution environment (scripts/regenerate.js).
   // - Everything ok -> HTTP 200 + success:true.
   const body = {
-    success: allChangesApplied && !deployError,
+    success: allChangesApplied && !deployError && !regenerateRequired,
     appliedCount: appliedChanges.length,
     errorCount: errors.length + (deployError ? 1 : 0),
     errors,
     deployError: deployError || undefined,
+    deploySkipped: !!regenerateRequired,
+    regenerateRequired: regenerateRequired || undefined,
     deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null
   };
 
