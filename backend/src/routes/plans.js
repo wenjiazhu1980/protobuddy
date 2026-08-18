@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getById, query, insert, update } from '../db.js';
 import { generatePlanWithMakers } from '../services/makersModels.js';
+import { checkConsistency, buildConsistencyFeedback } from '../services/consistency.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
 import { prepareForDeploy, apiBaseFromReq } from '../services/generator.js';
@@ -182,13 +183,20 @@ router.post('/:id/plan', async (req, res) => {
 
   let rawChanges = normalizeChanges(result.plan.changes);
   let validations = await precheckChanges(rawChanges);
+  let consistency = checkConsistency(annotations, rawChanges);
   let retried = false;
 
   // Auto-retry once (Makers path only): feed the concrete validation errors
-  // back to the model so it can fix paths / old_code itself.
-  if (result.method === 'makers' && validations.some(v => v.status === 'error')) {
-    const feedback = buildFeedback(rawChanges, validations);
-    console.log(`[plans] Dry-run precheck failed (${validations.filter(v => v.status === 'error').length} error(s)), retrying generation with feedback...`);
+  // AND any unaddressed annotations back to the model so it can fix paths /
+  // old_code / missing coverage itself.
+  const errCount = vs => vs.filter(v => v.status === 'error').length;
+  if (result.method === 'makers'
+    && (errCount(validations) > 0 || consistency.uncovered_count > 0)) {
+    const feedback = [
+      buildFeedback(rawChanges, validations),
+      buildConsistencyFeedback(consistency)
+    ].filter(Boolean).join('\n');
+    console.log(`[plans] Precheck failed (${errCount(validations)} error(s)) / consistency uncovered ${consistency.uncovered_count}, retrying generation with feedback...`);
     try {
       const retry = await generatePlanWithMakers(
         project.makers_key,
@@ -201,14 +209,19 @@ router.post('/:id/plan', async (req, res) => {
       if (retry.success) {
         const retryChanges = normalizeChanges(retry.plan.changes);
         const retryValidations = await precheckChanges(retryChanges);
-        const errCount = a => a.filter(v => v.status === 'error').length;
-        if (errCount(retryValidations) < errCount(validations)) {
-          console.log(`[plans] Retry improved precheck errors ${errCount(validations)} -> ${errCount(retryValidations)}, adopting retry result`);
+        const retryConsistency = checkConsistency(annotations, retryChanges);
+        // Prefer fewer precheck errors first, then fewer uncovered annotations.
+        const better = errCount(retryValidations) < errCount(validations)
+          || (errCount(retryValidations) === errCount(validations)
+            && retryConsistency.uncovered_count < consistency.uncovered_count);
+        if (better) {
+          console.log(`[plans] Retry improved (errors ${errCount(validations)} -> ${errCount(retryValidations)}, uncovered ${consistency.uncovered_count} -> ${retryConsistency.uncovered_count}), adopting retry result`);
           result = retry;
           rawChanges = retryChanges;
           validations = retryValidations;
+          consistency = retryConsistency;
         } else {
-          console.log(`[plans] Retry did not improve precheck (still ${errCount(retryValidations)} error(s)), keeping first attempt`);
+          console.log(`[plans] Retry did not improve (still ${errCount(retryValidations)} error(s) / ${retryConsistency.uncovered_count} uncovered), keeping first attempt`);
         }
       }
     } catch (retryErr) {
@@ -227,6 +240,7 @@ router.post('/:id/plan', async (req, res) => {
     retried
   };
   console.log(`[plans] Dry-run precheck: ${precheck.passed ? 'PASSED' : 'FAILED'} (${errorCount} error, ${warnCount} warn, retried=${retried})`);
+  console.log(`[plans] Consistency check: ${consistency.covered_count} covered / ${consistency.weak_count} weak / ${consistency.uncovered_count} uncovered`);
 
   // Create plan record
   const plan = await insert('plans', {
@@ -245,7 +259,8 @@ router.post('/:id/plan', async (req, res) => {
     method: result.method,
     model: result.model || '',
     fallback_reason: result.fallbackReason || '',
-    precheck
+    precheck,
+    consistency
   });
 
   // Create plan change records (with per-change dry-run validation attached).

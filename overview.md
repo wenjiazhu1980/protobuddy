@@ -138,3 +138,12 @@
 - 用户需求：右侧「批注列表」支持类似 Figma 的手动关闭/展开，优化预览区空间。
 - 实现：Review.jsx 增加 panelOpen 状态并持久化到 localStorage；review-layout 动态 grid 宽度（320px ↔ 44px）+ 过渡动画。AnnotationLayer 新增 isOpen/onToggle，收起态渲染窄边栏（展开按钮、垂直标题「批注列表」、状态计数徽章、生成方案快捷按钮）。
 - 部署：protobuddy（overseas, deployment dprr6h4w9h7v）已上线；protobuddy.20140107.xyz 与 protobuddy.edgeone.dev 均加载新 bundle `index-CUZtZkvm.js`。
+
+## 迭代 25：方案生成 dry-run 匹配预检
+- 需求：把「apply 时才发现 old_code 不匹配」的问题前移到生成阶段自动拦截。
+- 实现（3 文件）：
+  - `plans.js`：生成后立即预检每条 change（文件存在/非二进制/old_code 恰好匹配 1 次）；有 error 且走 Makers 时，把具体错误作为反馈**自动重新生成一次**，取错误更少的版本；plan 记录 `precheck` 汇总、planChange 记录 `validation` 明细。
+  - `makersModels.js`：`generatePlanWithMakers` 新增 `retryFeedback` 参数，把上次的校验错误注入 userPrompt 让模型自我修正。
+  - `PlanReview.jsx`：每条修改建议显示预检徽章（✓ 唯一匹配 / ⚠ 警告 / ✕ 未通过 + 原因）；方案摘要卡显示预检横幅（含自动重试说明）；应用确认框对「已批准但预检失败」的条目给出警告。
+- 验证：本地端到端两条路径均过——坏路径（目标文件不存在 → error 正确捕获）、好路径（唯一匹配 → ok, match_count=1）。
+- 部署：protobuddy（overseas, deployment dp37vpupe4we），protobuddy.20140107.xyz 与 protobuddy.edgeone.dev 均已加载新 bundle `index-BBxBgUxR.js`。git 5e44eb4。

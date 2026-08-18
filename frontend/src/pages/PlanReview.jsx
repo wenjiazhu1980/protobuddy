@@ -287,6 +287,30 @@ export default function PlanReview() {
                   <strong>✓ 预检通过：</strong> 首次生成未通过自动校验，已带错误反馈重新生成并通过（{selectedPlan.precheck.checked} 条修改均唯一匹配）。
                 </div>
               )}
+              {selectedPlan.consistency && (
+                <div style={{
+                  marginBottom: 12, padding: 10, borderRadius: 6, fontSize: 12,
+                  background: selectedPlan.consistency.uncovered_count > 0 ? '#fef2f2' : '#f0fdf4',
+                  border: `1px solid ${selectedPlan.consistency.uncovered_count > 0 ? '#fca5a5' : '#86efac'}`,
+                  color: selectedPlan.consistency.uncovered_count > 0 ? '#7f1d1d' : '#14532d'
+                }}>
+                  <strong>
+                    {selectedPlan.consistency.uncovered_count > 0 ? '✕ 批注一致性未通过：' : '✓ 批注一致性通过：'}
+                  </strong>
+                  {' '}共 {selectedPlan.consistency.checked} 条批注，
+                  已回应 {selectedPlan.consistency.covered_count} 条
+                  {selectedPlan.consistency.weak_count > 0 && `、回应较弱 ${selectedPlan.consistency.weak_count} 条`}
+                  {selectedPlan.consistency.uncovered_count > 0 && `、未回应 ${selectedPlan.consistency.uncovered_count} 条`}
+                  {(selectedPlan.consistency.results || []).filter(r => r.status !== 'covered').map(r => (
+                    <div key={r.annotation_id} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid currentColor' }}>
+                      {r.status === 'uncovered' ? '✕' : '⚠'} 批注 #{r.annotation_id}
+                      {r.page ? `（${r.page}）` : ''}：{r.content}
+                      {r.matched_changes?.length > 0 && ` → 关联修改 #${r.matched_changes.join('、#')}`}
+                      {r.status === 'uncovered' && ' —— 方案未覆盖该批注诉求，建议驳回后补充批注重新生成'}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                 基于批注: {selectedPlan.annotations?.length || 0} 条 ·
                 修改建议: {selectedPlan.changes?.length || 0} 条 ·
@@ -305,6 +329,9 @@ export default function PlanReview() {
                     <span style={{ fontWeight: 600 }}>#{idx + 1}</span>
                     {statusBadge(change.status)}
                     {validationBadge(change.validation)}
+                    {change.annotation_id && (
+                      <span className="badge badge-gray" title="该修改针对的批注">批注 #{change.annotation_id}</span>
+                    )}
                     <span style={{ fontSize: 13, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{change.file_path}</span>
                   </div>
                   <div style={{ display: 'flex', gap: 4 }}>
