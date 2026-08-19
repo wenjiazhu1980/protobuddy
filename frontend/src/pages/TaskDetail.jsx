@@ -19,7 +19,9 @@ export default function TaskDetail() {
   const { id, taskId } = useParams();
   const navigate = useNavigate();
   const { guard } = useOwnerAuth();
-  const isNew = taskId === 'new';
+  // The route /project/:id/tasks/new is a static segment, so taskId is undefined
+  // there. The route /project/:id/tasks/:taskId is used for real task ids.
+  const isNew = !taskId;
 
   const [project, setProject] = useState(null);
   const [task, setTask] = useState(null);
