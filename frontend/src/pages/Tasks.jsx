@@ -172,7 +172,10 @@ export default function Tasks() {
   const handleSyncAnnotations = async () => {
     try {
       const r = await api.syncTaskAnnotations(id);
-      showToast(r.changed > 0 ? `批注同步完成，${r.changed} 处任务状态已更新` : '批注同步完成，无变化');
+      const parts = [];
+      if (r.changed > 0) parts.push(`${r.changed} 处任务内容已更新`);
+      if (r.skipped > 0) parts.push(`${r.skipped} 条批注无对应任务已跳过`);
+      showToast(parts.length ? `批注同步完成：${parts.join('，')}` : '批注同步完成，无变化');
       load();
     } catch (err) {
       showToast('同步失败: ' + err.message, 'error');

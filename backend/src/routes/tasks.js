@@ -8,8 +8,10 @@
  *     granularity + manual adjust (merge / split)
  *   - breakdown config get/put (owner)
  *   - export (JSON / CSV / GitLab push)
- *   - annotation sync: when prototype annotations are resolved, linked issues
- *     update progress / status (POST /sync-annotations)
+ *   - annotation sync (POST /sync-annotations): folds annotation changes into
+ *     task CONTENT only — never performs forward status transitions. A 'done'
+ *     task whose content changes rolls back to 'in_progress'; todo/in_progress
+ *     tasks are never advanced by sync (forward transitions are user-driven).
  */
 import { Router } from 'express';
 import { getById, query, insert, update, remove, getSetting, setSetting } from '../db.js';
@@ -399,13 +401,48 @@ router.post('/:id/tasks/export/gitlab', requireOwnerAuth, async (req, res) => {
 /* ---------------------------- annotation sync ---------------------------- */
 
 /**
- * Sync issues with the prototype's annotations:
- *  - link tasks that cover a page to annotations on that page (auto-link)
- *  - recompute resolved counts; when ALL linked annotations are resolved,
- *    transition the task to 'done' (prototype updated → issue done)
- *  - reopen task if an annotation is re-opened
- * Returns a summary of what changed.
+ * Sync prototype annotations into task CONTENT.
+ *
+ * ┌─ 业务规则（实现位置见 [R*] 行内标注）──────────────────────────────┐
+ * │ [R0] 核心原则：批注状态与任务状态是两个独立字段，二者不存在等价或   │
+ * │      映射关系。本函数任何路径都不把批注状态写入任务状态。           │
+ * │ [R1] 范围限制：同步仅更新任务内容（批注关联清单 annotation_ids +     │
+ * │      描述中的「批注明细」块），不执行任何正向状态流转。             │
+ * │ [R2] 回退规则：任务当前状态为 done 且本次同步导致内容变动 →          │
+ * │      自动回退为 in_progress。                                       │
+ * │ [R3] 禁止前进：todo / in_progress 任务即使内容变动，也严禁被推进为   │
+ * │      done；状态前进只能由用户手动操作或原有业务流程触发。           │
+ * │ [R4] 内容无变动的已完成任务保持原状态不变。                         │
+ * │ [R5] 回退操作幂等：重复同步不产生额外副作用（内容比较后才写库，     │
+ * │      第二次同步内容一致 → 零写入）。                                │
+ * │ [R6] 批注找不到对应任务 → 跳过并记录日志，不中断整体同步流程。      │
+ * └────────────────────────────────────────────────────────────────────┘
  */
+
+const ANN_BLOCK_MARK = '<!-- annotation-detail:v1 -->';
+
+/** 构建描述尾部的「批注明细」块（按 id 排序保证输出稳定 → 幂等 [R5]） */
+function buildAnnotationBlock(anns) {
+  if (!anns.length) return '';
+  const lines = anns.map(a =>
+    `- #${a.id} [${a.status === 'resolved' ? '已解决' : '待处理'}]` +
+    `${a.page ? ` 页面 ${a.page}` : ''}：${String(a.content || '').slice(0, 80)}`
+  );
+  return `${ANN_BLOCK_MARK}\n【批注明细】（由批注同步自动维护）\n${lines.join('\n')}`;
+}
+
+/**
+ * 将描述中的旧明细块替换为新块（块总是位于描述末尾）。
+ * block 为空串时移除旧块。返回合并后的完整描述。
+ */
+function mergeAnnotationBlock(description, block) {
+  const desc = String(description || '');
+  const idx = desc.indexOf(ANN_BLOCK_MARK);
+  const head = (idx === -1 ? desc : desc.slice(0, idx)).replace(/\s+$/, '');
+  if (!block) return head;
+  return (head ? head + '\n\n' : '') + block;
+}
+
 router.post('/:id/tasks/sync-annotations', async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -413,47 +450,68 @@ router.post('/:id/tasks/sync-annotations', async (req, res) => {
   const tasks = await getProjectTasks(req.params.id);
   const anns = await query('annotations', a => String(a.project_id) === String(req.params.id));
   const annById = new Map(anns.map(a => [String(a.id), a]));
-  const changes = [];
   const byPage = (page) => {
     const key = String(page || '').split('/').pop();
     return anns.filter(a => String(a.page || '').split('/').pop() === key);
   };
 
-  for (const task of tasks) {
-    if (task.source !== 'auto' && !(task.annotation_ids || []).length) continue;
-    let ids = [...(task.annotation_ids || [])];
+  const changes = [];
+  const claimed = new Set();   // 已被至少一个任务认领的批注 id
 
-    // auto-link: task covers a page → attach its open annotations
-    const pagePath = task.source_ref?.path;
-    if (pagePath) {
-      const pageAnns = byPage(pagePath);
-      for (const a of pageAnns) {
-        if (!ids.includes(a.id)) {
-          ids.push(a.id);
-          changes.push({ taskId: task.id, action: 'link', annotation_id: a.id });
-        }
+  for (const task of tasks) {
+    /* ---- [R1] 范围限制：同步只产出「内容」候选值，不产出正向状态 ---- */
+
+    // 关联清单：剔除已被删除的批注 + 自动补挂本任务覆盖页面的批注
+    let ids = (task.annotation_ids || []).map(String).filter(id => annById.has(id));
+    if (task.source === 'auto' && task.source_ref?.path) {
+      for (const a of byPage(task.source_ref.path)) {
+        if (!ids.includes(String(a.id))) ids.push(String(a.id));
       }
     }
+    ids.forEach(id => claimed.add(id));
 
-    const linked = ids.filter(id => annById.has(String(id)));
-    const resolved = linked.filter(id => annById.get(String(id)).status === 'resolved');
-    const patch = { annotation_ids: ids };
+    // 描述明细块：由当前关联批注重新生成（稳定排序 → 幂等 [R5]）
+    const linkedAnns = ids.map(id => annById.get(id)).sort((a, b) => Number(a.id) - Number(b.id));
+    const nextDesc = mergeAnnotationBlock(task.description, buildAnnotationBlock(linkedAnns));
 
-    if (resolved.length === linked.length && linked.length > 0 && task.status !== 'done') {
-      patch.status = 'done';
-      changes.push({ taskId: task.id, action: 'done', resolved: linked.length, total: linked.length });
-    } else if (resolved.length < linked.length && resolved.length > 0 && task.status === 'done') {
+    /* ---- 内容变更检测：关联清单或描述与现状逐字段比较 ---- */
+    const idsChanged = JSON.stringify(ids) !== JSON.stringify((task.annotation_ids || []).map(String));
+    const descChanged = nextDesc !== String(task.description || '');
+    if (!idsChanged && !descChanged) continue;  // [R4] 内容无变动 → 保持原状态，不写库
+
+    const patch = { annotation_ids: ids, description: nextDesc };
+    changes.push({
+      taskId: task.id,
+      action: 'content',
+      annotation_ids: ids,
+      detail: [
+        idsChanged ? `关联批注 ${ids.length} 条` : null,
+        descChanged ? '描述批注明细已更新' : null
+      ].filter(Boolean).join('；')
+    });
+
+    /* ---- [R2] 回退规则：done + 内容变动 → in_progress ----
+       ---- [R3] 禁止前进：todo/in_progress 不写 status 字段，任何情况下
+                同步都不得将任务置为 done ---- */
+    if (task.status === 'done') {
       patch.status = 'in_progress';
-      changes.push({ taskId: task.id, action: 'reopen', resolved: resolved.length, total: linked.length });
-    } else if (resolved.length === 0 && linked.length > 0 && task.status === 'done') {
-      patch.status = 'todo';
-      changes.push({ taskId: task.id, action: 'reopen_to_todo' });
+      changes.push({ taskId: task.id, action: 'rollback', from: 'done', to: 'in_progress', reason: '内容变动自动回退' });
     }
 
-    if (Object.keys(patch).length) await update('tasks', task.id, patch);
+    await update('tasks', task.id, patch);
+    // [R5] 幂等：本次已把内容写平；重复调用时上面的比较全部相等 → 零写入、零回退
   }
 
-  res.json({ success: true, changed: changes.length, changes });
+  /* ---- [R6] 找不到对应任务的批注：跳过 + 记录日志，不中断流程 ---- */
+  const skipped = [];
+  for (const a of anns) {
+    if (!claimed.has(String(a.id))) {
+      skipped.push({ annotation_id: a.id, page: a.page || null, reason: 'no matching task' });
+      console.warn(`[tasks] sync-annotations: annotation #${a.id} (page=${a.page || '-'}) has no matching task, skipped`);
+    }
+  }
+
+  res.json({ success: true, changed: changes.length, changes, skipped: skipped.length, skipped_list: skipped });
 });
 
 /* --------------------------- :taskId routes (LAST — static paths above must
