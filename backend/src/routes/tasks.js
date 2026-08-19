@@ -494,7 +494,7 @@ router.put('/:id/tasks/:taskId', requireOwnerAuth, async (req, res) => {
   }
 
   const patch = {};
-  const { title, description, status, priority, estimate_hours, labels, module_path } = req.body;
+  const { title, description, status, priority, estimate_hours, labels, module_path, sort_order } = req.body;
   if (title !== undefined && String(title).trim()) patch.title = String(title).trim();
   if (description !== undefined) patch.description = description;
   if (status !== undefined) {
@@ -508,6 +508,7 @@ router.put('/:id/tasks/:taskId', requireOwnerAuth, async (req, res) => {
   if (estimate_hours !== undefined) patch.estimate_hours = Number(estimate_hours);
   if (labels !== undefined) patch.labels = Array.isArray(labels) ? labels : [];
   if (module_path !== undefined) patch.module_path = Array.isArray(module_path) ? module_path : [];
+  if (sort_order !== undefined) patch.sort_order = Number(sort_order);
 
   const updated = await update('tasks', req.params.taskId, patch);
   res.json(cleanTask(updated));

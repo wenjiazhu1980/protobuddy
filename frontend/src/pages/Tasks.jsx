@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, getOwnerToken } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
@@ -8,12 +8,22 @@ const STATUS_META = {
   in_progress: { label: '进行中', color: 'var(--blue, #2563eb)' },
   done: { label: '已完成', color: 'var(--green, #16a34a)' }
 };
+const STATUS_KEYS = Object.keys(STATUS_META);
 
 const PRIORITY_META = {
   P0: { label: 'P0 紧急', cls: 'badge-red' },
   P1: { label: 'P1 高', cls: 'badge-blue' },
   P2: { label: 'P2 普通', cls: 'badge-gray' }
 };
+
+/** Compute new sort_order when dropping into a column at a given visual index. */
+function computeSortOrder(columnTasks, dropIndex, draggedTaskId) {
+  const siblings = columnTasks.filter(t => t.id !== draggedTaskId);
+  if (siblings.length === 0) return 1000;
+  if (dropIndex <= 0) return siblings[0].sort_order - 1000;
+  if (dropIndex >= siblings.length) return siblings[siblings.length - 1].sort_order + 1000;
+  return (siblings[dropIndex - 1].sort_order + siblings[dropIndex].sort_order) / 2;
+}
 
 export default function Tasks() {
   const { id } = useParams();
@@ -48,6 +58,19 @@ export default function Tasks() {
   const [gitlabForm, setGitlabForm] = useState({ base_url: '', private_token: '', project_id: '', enabled: false });
   const [testingGitlab, setTestingGitlab] = useState(false);
 
+  // drag-and-drop
+  const [dragTaskId, setDragTaskId] = useState(null);
+  const [dragOverStatus, setDragOverStatus] = useState(null);
+  const [returning, setReturning] = useState(false);
+  const dragRef = useRef(null);
+
+  // undo
+  const [lastMove, setLastMove] = useState(null);
+
+  // task card move menu
+  const [menuTask, setMenuTask] = useState(null);
+  const menuRef = useRef(null);
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
@@ -78,6 +101,20 @@ export default function Tasks() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Close move menu on outside click / scroll
+  useEffect(() => {
+    if (!menuTask) return;
+    const close = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuTask(null);
+    };
+    document.addEventListener('pointerdown', close, true);
+    document.addEventListener('scroll', close, true);
+    return () => {
+      document.removeEventListener('pointerdown', close, true);
+      document.removeEventListener('scroll', close, true);
+    };
+  }, [menuTask]);
+
   // Merge flow entry: /tasks?merge=1&target=<taskId> from the task detail page
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -88,9 +125,17 @@ export default function Tasks() {
   }, []);
 
   const grouped = {
-    todo: tasks.filter(t => t.status === 'todo'),
-    in_progress: tasks.filter(t => t.status === 'in_progress'),
-    done: tasks.filter(t => t.status === 'done')
+    todo: tasks.filter(t => t.status === 'todo').sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    in_progress: tasks.filter(t => t.status === 'in_progress').sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)),
+    done: tasks.filter(t => t.status === 'done').sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+  };
+
+  const updateTaskOptimistically = (taskId, patch) => {
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...patch } : t));
+  };
+
+  const persistTaskMove = async (taskId, patch) => {
+    await guard(id, () => api.updateTask(id, taskId, patch, getOwnerToken(id)));
   };
 
   const openGenerate = async (granularity) => {
@@ -229,6 +274,237 @@ export default function Tasks() {
     }
   };
 
+  /* ========================= drag & drop ========================= */
+
+  const cleanupDrag = () => {
+    if (dragRef.current?.ghost) {
+      dragRef.current.ghost.remove();
+    }
+    if (dragRef.current?.source) {
+      dragRef.current.source.releasePointerCapture?.(dragRef.current.pointerId);
+    }
+    dragRef.current = null;
+    setDragTaskId(null);
+    setDragOverStatus(null);
+    setReturning(false);
+  };
+
+  const handlePointerDown = (e, task) => {
+    // Ignore clicks on buttons, links, menus and merge-mode selection
+    if (mergeMode) return;
+    if (e.target.closest('button, a, [data-no-drag]')) return;
+    const card = e.currentTarget;
+    if (!card) return;
+
+    e.preventDefault();
+    const rect = card.getBoundingClientRect();
+    const ghost = card.cloneNode(true);
+    ghost.style.position = 'fixed';
+    ghost.style.left = `${rect.left}px`;
+    ghost.style.top = `${rect.top}px`;
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.height = `${rect.height}px`;
+    ghost.style.zIndex = '10000';
+    ghost.style.pointerEvents = 'none';
+    ghost.style.opacity = '0.92';
+    ghost.style.transform = 'scale(1.03) rotate(1deg)';
+    ghost.style.boxShadow = '0 14px 40px rgba(0,0,0,0.18)';
+    ghost.style.transition = 'transform 0.15s, box-shadow 0.15s';
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.classList.add('task-card-ghost');
+    document.body.appendChild(ghost);
+
+    dragRef.current = {
+      taskId: task.id,
+      source: card,
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      ghost,
+      hasMoved: false,
+      origStatus: task.status,
+      origSortOrder: task.sort_order
+    };
+
+    try { card.setPointerCapture(e.pointerId); } catch {}
+    setDragTaskId(task.id);
+  };
+
+  const moveGhost = (clientX, clientY) => {
+    const d = dragRef.current;
+    if (!d?.ghost) return;
+    d.ghost.style.left = `${clientX - d.ghost.offsetWidth / 2}px`;
+    d.ghost.style.top = `${clientY - d.ghost.offsetHeight / 2}px`;
+  };
+
+  const findDropTarget = (clientX, clientY) => {
+    dragRef.current?.ghost?.style.setProperty('display', 'none');
+    let el = document.elementFromPoint(clientX, clientY);
+    dragRef.current?.ghost?.style.removeProperty('display');
+    while (el && el !== document.body) {
+      const status = el.getAttribute('data-status');
+      if (status && STATUS_KEYS.includes(status)) return status;
+      el = el.parentElement;
+    }
+    return null;
+  };
+
+  const handlePointerMove = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.hasMoved && Math.hypot(dx, dy) < 5) return;
+    if (!d.hasMoved) {
+      d.hasMoved = true;
+      d.ghost.style.transition = 'none';
+    }
+    moveGhost(e.clientX, e.clientY);
+    const over = findDropTarget(e.clientX, e.clientY);
+    setDragOverStatus(over);
+  };
+
+  const animateReturn = () => {
+    const d = dragRef.current;
+    if (!d?.ghost || !d.source) return;
+    const rect = d.source.getBoundingClientRect();
+    d.ghost.style.transition = 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
+    d.ghost.style.left = `${rect.left}px`;
+    d.ghost.style.top = `${rect.top}px`;
+    d.ghost.style.transform = 'scale(1) rotate(0deg)';
+    d.ghost.style.opacity = '0.6';
+    setReturning(true);
+    setTimeout(cleanupDrag, 260);
+  };
+
+  const executeDrop = async (targetStatus, clientX, clientY) => {
+    const d = dragRef.current;
+    if (!d) return;
+    const task = tasks.find(t => t.id === d.taskId);
+    if (!task) { cleanupDrag(); return; }
+
+    // Determine drop index inside target column by measuring card centers
+    const columnEl = document.querySelector(`.task-column[data-status="${targetStatus}"] .task-column-body`);
+    let dropIndex = grouped[targetStatus].length;
+    if (columnEl) {
+      const cards = [...columnEl.querySelectorAll('.task-card[data-task-id]')]
+        .filter(c => Number(c.getAttribute('data-task-id')) !== d.taskId);
+      let bestIndex = cards.length;
+      for (let i = 0; i < cards.length; i++) {
+        const r = cards[i].getBoundingClientRect();
+        const mid = r.top + r.height / 2;
+        if (clientY < mid) { bestIndex = i; break; }
+      }
+      dropIndex = bestIndex;
+    }
+
+    const sameColumn = task.status === targetStatus;
+    const currentIndex = grouped[targetStatus].findIndex(t => t.id === d.taskId);
+    if (sameColumn && (dropIndex === currentIndex || dropIndex === currentIndex + 1)) {
+      animateReturn();
+      return;
+    }
+
+    const newSortOrder = computeSortOrder(grouped[targetStatus], dropIndex, d.taskId);
+    const patch = { status: targetStatus, sort_order: newSortOrder };
+
+    // Optimistic UI update
+    updateTaskOptimistically(d.taskId, patch);
+    setLastMove({
+      taskId: d.taskId,
+      fromStatus: d.origStatus,
+      fromSortOrder: d.origSortOrder,
+      toStatus: targetStatus,
+      toSortOrder: newSortOrder
+    });
+
+    cleanupDrag();
+
+    try {
+      await persistTaskMove(d.taskId, patch);
+      showToast(`已移动至「${STATUS_META[targetStatus].label}」`);
+    } catch (err) {
+      // Rollback optimistic update
+      updateTaskOptimistically(d.taskId, { status: d.origStatus, sort_order: d.origSortOrder });
+      setLastMove(null);
+      if (err.message !== 'owner verification cancelled') {
+        showToast('移动保存失败: ' + err.message, 'error');
+      }
+    }
+  };
+
+  const handlePointerUp = (e) => {
+    const d = dragRef.current;
+    if (!d) return;
+    try { d.source.releasePointerCapture?.(d.pointerId); } catch {}
+    if (!d.hasMoved) {
+      cleanupDrag();
+      navigate(`/project/${id}/tasks/${d.taskId}`);
+      return;
+    }
+    const over = dragOverStatus;
+    if (over && over !== d.origStatus) {
+      executeDrop(over, e.clientX, e.clientY);
+    } else if (over && over === d.origStatus) {
+      executeDrop(over, e.clientX, e.clientY);
+    } else {
+      animateReturn();
+    }
+  };
+
+  const handleUndo = async () => {
+    if (!lastMove) return;
+    const { taskId, fromStatus, fromSortOrder } = lastMove;
+    const patch = { status: fromStatus, sort_order: fromSortOrder };
+    updateTaskOptimistically(taskId, patch);
+    setLastMove(null);
+    try {
+      await persistTaskMove(taskId, patch);
+      showToast('已撤销上次移动');
+    } catch (err) {
+      load();
+      if (err.message !== 'owner verification cancelled') showToast('撤销失败: ' + err.message, 'error');
+    }
+  };
+
+  const moveTaskViaMenu = async (task, newStatus) => {
+    setMenuTask(null);
+    if (task.status === newStatus) return;
+    const patch = { status: newStatus, sort_order: computeSortOrder(grouped[newStatus], grouped[newStatus].length, task.id) };
+    setLastMove({
+      taskId: task.id,
+      fromStatus: task.status,
+      fromSortOrder: task.sort_order,
+      toStatus: newStatus,
+      toSortOrder: patch.sort_order
+    });
+    updateTaskOptimistically(task.id, patch);
+    try {
+      await persistTaskMove(task.id, patch);
+      showToast(`已移动至「${STATUS_META[newStatus].label}」`);
+    } catch (err) {
+      updateTaskOptimistically(task.id, { status: task.status, sort_order: task.sort_order });
+      setLastMove(null);
+      if (err.message !== 'owner verification cancelled') showToast('移动失败: ' + err.message, 'error');
+    }
+  };
+
+  useEffect(() => {
+    const onMove = (e) => handlePointerMove(e);
+    const onUp = (e) => handlePointerUp(e);
+    const onCancel = () => cleanupDrag();
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onCancel);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onCancel);
+    };
+  }, [tasks, dragOverStatus]);
+
+  /* ================================================================ */
+
   const totalEstimate = tasks.reduce((s, t) => s + (t.estimate_hours || 0), 0);
 
   if (loading) {
@@ -262,6 +538,11 @@ export default function Tasks() {
             </>
           ) : (
             <>
+              {lastMove && (
+                <button className="btn btn-sm btn-secondary" onClick={handleUndo} title="撤销刚才的拖拽/菜单移动">
+                  ↩ 撤销移动
+                </button>
+              )}
               <button className="btn btn-sm btn-secondary" onClick={() => setMergeMode(true)}>批量操作</button>
               <div style={{ position: 'relative' }}>
                 <button className="btn btn-sm btn-secondary" onClick={() => setShowExport(!showExport)} disabled={tasks.length === 0}>
@@ -286,11 +567,16 @@ export default function Tasks() {
 
       {/* board */}
       <div className="task-board">
-        {Object.keys(STATUS_META).map(status => {
+        {STATUS_KEYS.map(status => {
           const meta = STATUS_META[status];
           const list = grouped[status];
+          const isOver = dragOverStatus === status && dragTaskId !== null;
           return (
-            <div className="task-column" key={status}>
+            <div
+              className={`task-column ${isOver ? 'task-column-over' : ''}`}
+              key={status}
+              data-status={status}
+            >
               <div className="task-column-header">
                 <span className="task-column-dot" style={{ background: meta.color }} />
                 <span>{meta.label}</span>
@@ -303,8 +589,19 @@ export default function Tasks() {
                 {list.map(t => (
                   <div
                     key={t.id}
-                    className={`task-card ${selected.has(t.id) ? 'task-card-selected' : ''}`}
-                    onClick={() => mergeMode ? toggleSelect(t.id) : navigate(`/project/${id}/tasks/${t.id}`)}
+                    data-task-id={t.id}
+                    className={`task-card ${selected.has(t.id) ? 'task-card-selected' : ''} ${dragTaskId === t.id ? 'task-card-dragging' : ''}`}
+                    onPointerDown={(e) => handlePointerDown(e, t)}
+                    role="button"
+                    tabIndex={0}
+                    aria-grabbed={dragTaskId === t.id}
+                    aria-label={`任务 ${t.title}，${STATUS_META[t.status].label}，按空格或回车打开详情，拖拽可移动状态`}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        navigate(`/project/${id}/tasks/${t.id}`);
+                      }
+                    }}
                   >
                     <div className="task-card-top">
                       <span className={`badge ${PRIORITY_META[t.priority]?.cls || 'badge-gray'}`}>{PRIORITY_META[t.priority]?.label || t.priority}</span>
@@ -312,6 +609,17 @@ export default function Tasks() {
                       {t.source === 'manual' && <span className="badge badge-gray">手动</span>}
                       {t.gitlab?.url && <span className="badge badge-green">GitLab #{t.gitlab.iid}</span>}
                       <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{t.estimate_hours}h</span>
+                      <button
+                        className="task-card-menu"
+                        data-no-drag
+                        aria-haspopup="true"
+                        aria-label="移动任务菜单"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMenuTask({ ...t, _menuX: e.clientX, _menuY: e.clientY });
+                        }}
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >⋮</button>
                     </div>
                     <div className="task-card-title">{t.title}</div>
                     {t.module_path?.length > 0 && (
@@ -341,6 +649,29 @@ export default function Tasks() {
           );
         })}
       </div>
+
+      {/* Move menu (keyboard / touch alternative) */}
+      {menuTask && (
+        <div
+          ref={menuRef}
+          className="task-move-menu"
+          style={{ position: 'fixed', left: menuTask._menuX, top: menuTask._menuY, zIndex: 10001 }}
+        >
+          <div className="task-move-menu-title">移动「{menuTask.title}」到</div>
+          {STATUS_KEYS.filter(s => s !== menuTask.status).map(s => (
+            <div
+              key={s}
+              className="task-move-menu-item"
+              onClick={() => moveTaskViaMenu(menuTask, s)}
+            >
+              <span className="task-column-dot" style={{ background: STATUS_META[s].color }} />
+              {STATUS_META[s].label}
+            </div>
+          ))}
+          <div className="task-move-menu-divider" />
+          <div className="task-move-menu-item" onClick={() => { setMenuTask(null); navigate(`/project/${id}/tasks/${menuTask.id}`); }}>查看详情…</div>
+        </div>
+      )}
 
       {/* generate modal */}
       {showGen && (
