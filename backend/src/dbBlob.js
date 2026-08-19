@@ -29,6 +29,7 @@ const defaultDB = {
   annotations: [],
   plans: [],
   planChanges: [],
+  tasks: [],
   settings: {},
   _seq: 0
 };

@@ -125,6 +125,37 @@ export const api = {
   applyPlan: (planId, ownerToken) => request(`/projects/plans/${planId}/apply`, { method: 'POST', ownerToken }),
   rollbackPlan: (planId, ownerToken) => request(`/projects/plans/${planId}/rollback`, { method: 'POST', ownerToken }),
 
+  // Tasks (task list module)
+  listTasks: (id, params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return request(`/projects/${id}/tasks${query ? '?' + query : ''}`);
+  },
+  getTask: (id, taskId) => request(`/projects/${id}/tasks/${taskId}`),
+  createTask: (id, data, ownerToken) => request(`/projects/${id}/tasks`, { method: 'POST', body: data, ownerToken }),
+  updateTask: (id, taskId, data, ownerToken) => request(`/projects/${id}/tasks/${taskId}`, { method: 'PUT', body: data, ownerToken }),
+  deleteTask: (id, taskId, ownerToken) => request(`/projects/${id}/tasks/${taskId}`, { method: 'DELETE', ownerToken }),
+  generateTasks: (id, config, ownerToken) => request(`/projects/${id}/tasks/generate`, { method: 'POST', body: { config }, ownerToken }),
+  generateTasksPreview: (id, config) => request(`/projects/${id}/tasks/generate/preview`, { method: 'POST', body: { config } }),
+  mergeTasks: (id, taskId, taskIds, ownerToken) => request(`/projects/${id}/tasks/${taskId}/merge`, { method: 'POST', body: { task_ids: taskIds }, ownerToken }),
+  splitTask: (id, taskId, parts, ownerToken) => request(`/projects/${id}/tasks/${taskId}/split`, { method: 'POST', body: { parts }, ownerToken }),
+  getTaskConfig: (id) => request(`/projects/${id}/tasks/config`),
+  updateTaskConfig: (id, data, ownerToken) => request(`/projects/${id}/tasks/config`, { method: 'PUT', body: data, ownerToken }),
+  getGitlabConfig: (id) => request(`/projects/${id}/tasks/gitlab-config`),
+  updateGitlabConfig: (id, data, ownerToken) => request(`/projects/${id}/tasks/gitlab-config`, { method: 'PUT', body: data, ownerToken }),
+  testGitlab: (id, ownerToken) => request(`/projects/${id}/tasks/gitlab-test`, { method: 'POST', ownerToken }),
+  exportTasks: async (id, format = 'json') => {
+    // Raw text download: JSON/CSV responses are NOT JSON-wrapped, so bypass the
+    // JSON-parsing request() wrapper.
+    const res = await fetch(`${API_BASE}/projects/${id}/tasks/export?format=${format}`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return res.text();
+  },
+  pushTasksToGitlab: (id, taskIds, ownerToken) => request(`/projects/${id}/tasks/export/gitlab`, { method: 'POST', body: { task_ids: taskIds }, ownerToken }),
+  syncTaskAnnotations: (id) => request(`/projects/${id}/tasks/sync-annotations`, { method: 'POST' }),
+
   // Health
   health: () => request('/health'),
 };

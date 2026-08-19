@@ -4,6 +4,8 @@ import Dashboard from './pages/Dashboard.jsx';
 import Review from './pages/Review.jsx';
 import PlanReview from './pages/PlanReview.jsx';
 import Settings from './pages/Settings.jsx';
+import Tasks from './pages/Tasks.jsx';
+import TaskDetail from './pages/TaskDetail.jsx';
 import { OwnerAuthProvider } from './components/OwnerAuthContext.jsx';
 
 function TopBar() {
@@ -37,6 +39,9 @@ export default function App() {
           <Route path="/project/:id/review" element={<Review />} />
           <Route path="/project/:id/plan" element={<PlanReview />} />
           <Route path="/project/:id/settings" element={<Settings />} />
+          <Route path="/project/:id/tasks" element={<Tasks />} />
+          <Route path="/project/:id/tasks/new" element={<TaskDetail />} />
+          <Route path="/project/:id/tasks/:taskId" element={<TaskDetail />} />
         </Routes>
       </div>
     </OwnerAuthProvider>

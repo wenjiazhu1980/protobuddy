@@ -257,6 +257,7 @@ export default function Dashboard() {
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/review`)}>评审</button>
           <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/plan`)}>方案审核</button>
+          <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/tasks`)}>任务清单</button>
           <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/settings`)}>设置</button>
         </div>
       </div>

@@ -9,6 +9,7 @@ import filesRouter from './routes/files.js';
 import deployRouter from './routes/deploy.js';
 import annotationsRouter from './routes/annotations.js';
 import plansRouter from './routes/plans.js';
+import tasksRouter from './routes/tasks.js';
 import ownerAuthRouter from './routes/ownerAuth.js';
 import { isBlobMode } from './config.js';
 
@@ -103,6 +104,7 @@ export function createApp({ makersPrefix } = {}) {
   app.use('/api/projects', wrapAsyncHandlers(deployRouter));      // /api/projects/:id/deploy
   app.use('/api/projects', wrapAsyncHandlers(annotationsRouter)); // /api/projects/:id/annotations
   app.use('/api/projects', wrapAsyncHandlers(plansRouter));       // /api/projects/:id/plan + /api/plans/:planId
+  app.use('/api/projects', wrapAsyncHandlers(tasksRouter));       // /api/projects/:id/tasks*
 
   // Serve frontend build (local server only; Makers serves static itself)
   if (!blobMode) {

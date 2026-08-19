@@ -100,6 +100,8 @@ router.delete('/:id', requireOwnerAuth, async (req, res) => {
   for (const a of annRecs) await remove('annotations', a.id);
   const planRecs = await query('plans', p => String(p.project_id) === String(req.params.id));
   for (const p of planRecs) await remove('plans', p.id);
+  const taskRecs = await query('tasks', t => String(t.project_id) === String(req.params.id));
+  for (const t of taskRecs) await remove('tasks', t.id);
 
   // Delete project files
   await removeProjectFiles(req.params.id);
