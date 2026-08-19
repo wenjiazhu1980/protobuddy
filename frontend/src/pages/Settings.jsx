@@ -20,6 +20,31 @@ export default function Settings() {
     custom_domain: ''
   });
   const [toast, setToast] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteProject = async () => {
+    // Double confirmation: 1) warning dialog 2) type the exact project name
+    const first = window.confirm(`确定要删除项目「${project.name}」吗？\n\n所有原型文件、批注、方案和任务都将被永久删除，此操作不可恢复。`);
+    if (!first) return;
+
+    const typed = window.prompt(`二次确认：请输入项目名称「${project.name}」以确认删除。`);
+    if (typed === null) return;
+    if (typed.trim() !== project.name) {
+      showToast('项目名称不匹配，已取消删除', 'error');
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      // Owner maintenance operation: guarded by the owner password (one-time per session)
+      await guard(id, () => api.deleteProject(id, getOwnerToken(id)));
+      navigate('/');
+    } catch (err) {
+      if (err.message !== 'owner verification cancelled') showToast('删除失败: ' + err.message, 'error');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // Built-in models: free, no vendor key binding required.
   const MAKERS_BUILTIN_MODELS = [
@@ -202,6 +227,25 @@ export default function Settings() {
           <div style={{ marginTop: 16, padding: 12, background: 'var(--primary-light)', borderRadius: 6, fontSize: 12, color: 'var(--primary-dark)' }}>
             <strong>安全说明：</strong> 密钥存储在后端服务器的数据库中，不会出现在前端代码或浏览器中。所有对 EdgeOne 和 Makers Models 的 API 调用都通过后端代理进行。
           </div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 16, borderColor: 'var(--red)' }}>
+        <div className="card-header">
+          <span className="card-title" style={{ color: 'var(--red)' }}>危险操作</span>
+        </div>
+        <div className="card-body">
+          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+            删除项目「{project.name}」将永久移除所有原型文件、批注、修改方案与任务，且不可恢复。
+            删除需要经过二次确认（输入项目名称）并验证 owner 密码。
+          </div>
+          <button
+            className="btn btn-danger"
+            onClick={handleDeleteProject}
+            disabled={deleting || saving}
+          >
+            {deleting ? '删除中...' : '删除项目'}
+          </button>
         </div>
       </div>
 
