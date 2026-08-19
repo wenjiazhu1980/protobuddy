@@ -43,7 +43,9 @@ function cleanTask(t) {
     annotation_ids: t.annotation_ids || [],
     labels: t.labels || [],
     module_path: t.module_path || [],
-    children_ids: t.children_ids || []
+    children_ids: t.children_ids || [],
+    feature_points: t.feature_points || [],
+    page_feature_count: t.page_feature_count || 0
   };
 }
 
@@ -137,6 +139,8 @@ router.post('/:id/tasks/generate', requireOwnerAuth, async (req, res) => {
         module_path: d.module_path,
         source: 'auto',
         source_ref: d.source_ref,
+        feature_points: d.feature_points || [],
+        page_feature_count: d.page_feature_count || 0,
         annotation_ids: d.annotation_ids || [],
         parent_id: null,
         children_ids: [],
