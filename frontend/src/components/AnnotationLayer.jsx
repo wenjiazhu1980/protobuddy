@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 const STATUS_META = {
-  open:     { label: '待处理', badge: 'badge-orange', pinClass: '' },
-  resolved: { label: '已解决', badge: 'badge-green',  pinClass: 'resolved' },
-  rejected: { label: '不采纳', badge: 'badge-gray',   pinClass: 'rejected' }
+  open:     { label: '待处理', badge: 'badge-orange', pinClass: '',     order: 0 },
+  resolved: { label: '已解决', badge: 'badge-green',  pinClass: 'resolved', order: 1 },
+  rejected: { label: '不采纳', badge: 'badge-gray',   pinClass: 'rejected', order: 2 }
 };
 
 const FILTERS = [
@@ -13,22 +13,149 @@ const FILTERS = [
   { key: 'rejected', label: '不采纳' }
 ];
 
+const SORTS = [
+  { key: 'default',      label: '默认顺序' },
+  { key: 'created_desc', label: '时间倒序' },
+  { key: 'created_asc',  label: '时间正序' },
+  { key: 'status',       label: '状态排序' }
+];
+
+/**
+ * Escape and quote a CSV cell value.
+ */
+function csvCell(value) {
+  const text = value === undefined || value === null ? '' : String(value);
+  if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function formatTimestamp() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+function sanitizeFileName(name) {
+  return String(name || 'project').replace(/[\\/:*?"<>|]/g, '_').slice(0, 40);
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function exportAsJson(annotations, meta) {
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    filter: meta.filter,
+    sort: meta.sort,
+    total: annotations.length,
+    annotations: annotations.map(a => ({
+      id: a.id,
+      content: a.content,
+      status: a.status,
+      author: a.author,
+      page: a.page,
+      x: a.x,
+      y: a.y,
+      created_at: a.created_at,
+      element_info: a.element_info || null
+    }))
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+  const filterLabel = FILTERS.find(f => f.key === meta.filter)?.label || meta.filter;
+  const sortLabel = SORTS.find(s => s.key === meta.sort)?.label || meta.sort;
+  const filename = `批注_${sanitizeFileName(meta.projectName)}_${filterLabel}_${sortLabel}_${formatTimestamp()}.json`;
+  triggerDownload(blob, filename);
+}
+
+function exportAsCsv(annotations, meta) {
+  const headers = ['id', 'content', 'status', 'author', 'page', 'x', 'y', 'created_at', 'element_info'];
+  const rows = annotations.map(a => [
+    a.id,
+    a.content,
+    a.status,
+    a.author,
+    a.page,
+    a.x,
+    a.y,
+    a.created_at,
+    a.element_info ? JSON.stringify(a.element_info) : ''
+  ]);
+  const lines = [headers, ...rows].map(r => r.map(csvCell).join(','));
+  // UTF-8 BOM so Excel opens Chinese correctly on Windows.
+  const csv = '\uFEFF' + lines.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const filterLabel = FILTERS.find(f => f.key === meta.filter)?.label || meta.filter;
+  const sortLabel = SORTS.find(s => s.key === meta.sort)?.label || meta.sort;
+  const filename = `批注_${sanitizeFileName(meta.projectName)}_${filterLabel}_${sortLabel}_${formatTimestamp()}.csv`;
+  triggerDownload(blob, filename);
+}
+
 /**
  * AnnotationLayer - panel showing all annotations for the current version.
- * Supports marking annotations as resolved (已解决) or rejected (不采纳).
+ * Supports marking annotations as resolved (已解决) or rejected (不采纳),
+ * filtering / sorting, and exporting the currently visible list.
  */
-export default function AnnotationLayer({ annotations, onResolve, onReject, onReopen, onDelete, onGeneratePlan, activeId, onActive, onPageTagClick, generating, isOpen = true, onToggle }) {
+export default function AnnotationLayer({
+  annotations,
+  onResolve,
+  onReject,
+  onReopen,
+  onDelete,
+  onGeneratePlan,
+  activeId,
+  onActive,
+  onPageTagClick,
+  generating,
+  projectName,
+  isOpen = true,
+  onToggle
+}) {
   const [filter, setFilter] = useState('all');
+  const [sort, setSort] = useState('default');
+  const [exportFormat, setExportFormat] = useState('json');
 
   const countBy = (s) => annotations.filter(a => a.status === s).length;
   const openCount = countBy('open');
   const resolvedCount = countBy('resolved');
   const rejectedCount = countBy('rejected');
 
-  const filtered = annotations.filter(a => {
-    if (filter === 'all') return true;
-    return a.status === filter;
-  });
+  const filtered = useMemo(() => {
+    let list = annotations.filter(a => {
+      if (filter === 'all') return true;
+      return a.status === filter;
+    });
+    list = [...list];
+    if (sort === 'created_desc') {
+      list.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    } else if (sort === 'created_asc') {
+      list.sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0));
+    } else if (sort === 'status') {
+      list.sort((a, b) => {
+        const orderA = (STATUS_META[a.status] || STATUS_META.open).order;
+        const orderB = (STATUS_META[b.status] || STATUS_META.open).order;
+        if (orderA !== orderB) return orderA - orderB;
+        return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+      });
+    }
+    return list;
+  }, [annotations, filter, sort]);
+
+  const handleExport = () => {
+    const meta = { projectName, filter, sort };
+    if (exportFormat === 'csv') {
+      exportAsCsv(filtered, meta);
+    } else {
+      exportAsJson(filtered, meta);
+    }
+  };
 
   if (!isOpen) {
     return (
@@ -102,7 +229,22 @@ export default function AnnotationLayer({ annotations, onResolve, onReject, onRe
         })}
       </div>
 
-      <div style={{ flex: 1, overflowY: 'auto' }}>
+      {/* Sort selector */}
+      <div className="annotation-sort">
+        <label htmlFor="annotation-sort">排序</label>
+        <select
+          id="annotation-sort"
+          value={sort}
+          onChange={(e) => setSort(e.target.value)}
+          className="annotation-sort-select"
+        >
+          {SORTS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
+        <span className="annotation-sort-count">共 {filtered.length} 条</span>
+      </div>
+
+      {/* Scrollable list */}
+      <div className="annotation-list">
         {filtered.length === 0 ? (
           <div className="empty-state" style={{ padding: '32px 16px' }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -169,18 +311,38 @@ export default function AnnotationLayer({ annotations, onResolve, onReject, onRe
         )}
       </div>
 
-      {openCount > 0 && (
-        <div style={{ padding: 12, borderTop: '1px solid var(--border)' }}>
-          <button
-            className="btn btn-primary"
-            style={{ width: '100%' }}
-            onClick={onGeneratePlan}
-            disabled={generating}
+      {/* Fixed bottom action bar */}
+      <div className="annotation-panel-footer">
+        <button
+          className="btn btn-primary"
+          style={{ width: '100%', marginBottom: 8 }}
+          onClick={onGeneratePlan}
+          disabled={generating || openCount === 0}
+          title={openCount === 0 ? '没有待处理批注' : '基于待处理批注生成修改方案'}
+        >
+          {generating ? '正在生成方案...' : `生成修改方案 (${openCount} 条待处理批注)`}
+        </button>
+
+        <div className="annotation-export">
+          <select
+            className="annotation-export-select"
+            value={exportFormat}
+            onChange={(e) => setExportFormat(e.target.value)}
+            aria-label="导出格式"
           >
-            {generating ? '正在生成方案...' : `生成修改方案 (${openCount} 条待处理批注)`}
+            <option value="json">JSON</option>
+            <option value="csv">CSV</option>
+          </select>
+          <button
+            className="btn btn-secondary annotation-export-btn"
+            onClick={handleExport}
+            disabled={filtered.length === 0}
+            title={filtered.length === 0 ? '当前筛选结果为空，无可导出数据' : `导出当前筛选后的 ${filtered.length} 条批注`}
+          >
+            导出
           </button>
         </div>
-      )}
+      </div>
     </div>
   );
 }

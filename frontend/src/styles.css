@@ -286,7 +286,7 @@ button {
   display: grid;
   grid-template-columns: 1fr 320px;
   gap: 16px;
-  height: calc(100vh - 56px - 48px);
+  min-height: 0;
 }
 
 .preview-container {
@@ -388,9 +388,10 @@ button {
   background: white;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .annotation-panel-header {
@@ -489,6 +490,73 @@ button {
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+  flex-shrink: 0;
+}
+
+.annotation-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+  font-size: 13px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.annotation-sort-select {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.annotation-sort-count {
+  white-space: nowrap;
+}
+
+.annotation-list {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  background: var(--bg-card);
+}
+
+.annotation-panel-footer {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.annotation-export {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.annotation-export-select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.annotation-export-btn {
+  flex-shrink: 0;
+}
+
+.review-main {
+  height: 100%;
 }
 
 .annotation-item {

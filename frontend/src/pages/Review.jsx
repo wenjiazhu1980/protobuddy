@@ -130,9 +130,9 @@ export default function Review() {
   const hasPreview = project.current_url || project.status === 'uploaded' || project.status === 'deployed';
 
   return (
-    <div className="main-content" style={{ paddingTop: 16 }}>
+    <div className="main-content review-main" style={{ paddingTop: 16, display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexShrink: 0 }}>
         <div>
           <Link to={`/project/${id}`} style={{ fontSize: 13 }}>← 返回仪表盘</Link>
           <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>{project.name} · 评审</h1>
@@ -154,7 +154,9 @@ export default function Review() {
         className="review-layout"
         style={{
           gridTemplateColumns: panelOpen ? '1fr 320px' : '1fr 44px',
-          transition: 'grid-template-columns 0.25s ease'
+          transition: 'grid-template-columns 0.25s ease',
+          flex: 1,
+          minHeight: 0
         }}
       >
         {/* Preview with annotation overlay */}
@@ -228,6 +230,7 @@ export default function Review() {
           onActive={(ann) => setActiveAnnotationId(ann.id === activeAnnotationId ? null : ann.id)}
           onPageTagClick={(page) => previewRef.current?.navigateTo(page)}
           generating={generating}
+          projectName={project.name}
           isOpen={panelOpen}
           onToggle={() => setPanelOpen(o => !o)}
         />
