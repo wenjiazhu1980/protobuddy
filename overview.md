@@ -1,48 +1,42 @@
-# 任务概览：空修改拒绝防护（old_code === new_code）
+# 前端全面改版 — Figma 风格黑白灰 UI
 
-**提交**: main 594a565 · 2026-08-20 · 已部署 protobuddy.20140107.xyz（deployment dpwzxhr75cdf）
+## 任务概述
+对 ProtoBuddy 前端进行整体改版：响应式三档适配（桌面/平板/移动端）、流畅交互动效、Figma 风格简洁现代的黑白灰视觉体系。纯 CSS 令牌化实现，零新增依赖。
 
-## 背景
+## 五个阶段（全部完成，git ddc36f1）
 
-用户要求检查方案 #627 是否真正修改成功。排查发现：该方案两条修改建议的 `old_code` 与 `new_code` 完全相同（都是带 `disabled` 的同一行 HTML），`replace(old, new)` 没有改动任何字符，但方案被标记为「已应用」、评分卡 100 分、批注被 resolve——一次**静默空应用**。预检只校验 `old_code` 能否唯一匹配，不校验是否产生实际变更。用户确认后要求加上「空修改拒绝」防护。
+### Phase 1 — 设计令牌 + 全局换肤
+- `styles.css` `:root` 重写：zinc 中性色阶、字号/间距/圆角/阴影/动效时长与缓动令牌（--dur/--ease-out/--ease-spring 等）
+- `--primary` 三值改黑色（#18181b），修复未定义的 --radius-md/--purple/--blue 引用 bug
+- 同步换色：favicon、TopBar logo、PreviewFrame 批注 pin 三色、链接色、Tasks/Dashboard 散落硬编码
 
-## 改动方案（backend/src/routes/plans.js）
+### Phase 2 — 导航改版
+- 新增 `projectTabs.js` + `ProjectNav.jsx`：项目内 5 Tab（概览/评审/方案/任务/设置），sticky + active 指示条
+- App.jsx TopBar 改造：<768px 汉堡菜单 + 面包屑；删除 Dashboard/Review 页内旧导航按钮
+- `dashboard-layout` 高度公式走令牌
 
-### 1. 生成时预检：`precheckChanges`
+### Phase 3 — 公共层 + 内联样式迁移
+- 新增 `ToastContext.jsx`（全局 toast 栈、退场动画、info 白底）+ `EmptyState.jsx`
+- 6 个页面本地 toast 全部迁移到 `useToast()`；页头/页标题/返回链接/弱化文本迁移到 `.page-header`/`.page-title`/`.back-link`/`.text-sm-muted` 公共类
 
-`old_code === new_code` 时直接标记为 `error`：
+### Phase 4 — 响应式三档
+- 统一断点 1024/768/480：dashboard 侧栏收窄→单列、review 双栏→单列、task-board 3列→1列、modal/toast 全宽、页头可换行
+- Review 动态列宽改 CSS 变量桥接（`--review-cols`），媒体查询可正常覆盖内联值
 
-- 提示「修改建议未产生实际变更（old_code 与 new_code 完全相同）。目标可能已达成，请重新描述需求或关闭对应批注」。
-- error 会自动进入评分卡（needs_review）与自动重试反馈回路；前端 PlanReview 的红色预检徽章与「预检未通过」提示自动展示该消息，无需前端改动。
+### Phase 5 — 动效体系
+- 页面切换 pageEnter、卡片 hover 微抬升、按钮 press scale(0.97)、Modal overlayIn/modalIn 弹性进场、project-card hover 抬升
+- `prefers-reduced-motion` 兜底关闭非必要动效（spinner 保留）
 
-### 2. 应用时硬校验：`POST /plans/:planId/apply`
+## 红线守护（批注锚点未受影响）
+- `.preview-iframe-wrapper` position:relative 语义未动
+- `.annotation-pin` left/top/transform 几何属性仍由 inline getPinStyle 注入，CSS 无覆盖
+- 批注状态色（resolved/rejected）已令牌化但色值语义不变
 
-在文件存在性/唯一匹配校验之前增加等值守卫：
+## 验证与部署
+- 前端构建通过（CSS 27.76 kB gzip 5.83 kB）
+- 已部署：deployment `dp8wtmca7aag` → https://protobuddy.20140107.xyz（home 200，线上 CSS 已含 pageEnter/overlayIn/--review-cols/prefers-reduced-motion）
+- 代码已推送：git `ddc36f1`
 
-- `old_code === new_code` → 该条拒绝应用，写入 errors，回滚到 `approved` 状态，整个 apply 返回 HTTP 409。
-- 提示语附带处理建议：目标可能已达成，建议驳回该条建议并关闭对应批注，或创建更明确的批注。
-- 批注不会被错误 resolve，快照机制照常工作。
-
-## 验证情况
-
-本地 3001 端口真实 E2E 冒烟测试：
-
-1. 创建测试项目 → 写入 `index.html` → 创建批注 → 生成规则引擎方案。
-2. 篡改 db.json 将 change 的 `new_code` 设为与 `old_code` 相同（且该代码真实存在于文件中），重启后端加载。
-3. 调用 apply → **HTTP 409**，`appliedCount: 0`，错误消息正确，快照正常创建，plan 状态回滚为 approved，批注未被 resolve。
-4. 测试项目与残留数据（planChanges/snapshots）已全部清理。
-
-其余验证：
-
-- `node --check` 语法通过。
-- EdgeOne Makers 部署成功：`dpwzxhr75cdf`，线上 `/api/health` 200。
-- 代码已提交并推送 GitHub：`594a565`。
-
-## 文件变更
-
-- `backend/src/routes/plans.js`：`precheckChanges` 增加 old/new 相等报错分支；apply 端点增加空修改拒绝守卫（+21/-7 行）。
-
-## 后续事项
-
-1. 方案 #627 属于历史空应用，其对应批注目标（下拉框 disabled）实际已达成，建议直接关闭该批注。
-2. 历史上其他标记「已应用」但可能同样为空应用的方案，如需排查可用 `old_code === new_code` 条件批量扫描 plans 数据。
+## 后续可选
+- PlanReview/Tasks/Dashboard 剩余低频内联样式可继续渐进迁移
+- 可选：骨架屏替代整页 spinner、路由级代码分割
