@@ -1,47 +1,51 @@
-# 任务概览：功能点感知的自动任务拆解
+# 任务概览：批注栏底部固定 + 筛选感知导出
 
-**提交**: `df596af` (main) · 2 个文件 · +406/-24 行 · 2026-08-19 · 已部署 protobuddy.20140107.xyz（deployment dpnkxf072l1a）
+**提交**: `6477048` (main) · 3 个文件 · +257/-24 行 · 2026-08-20 · 已部署 protobuddy.20140107.xyz（deployment dpwfgre0mx0m）
 
 ## 功能说明
 
-自动任务拆解升级为「功能点感知」：拆解前先对每个原型页面做功能画像，识别四类功能点，并将功能点完整写入每个任务的结构化描述，保证功能边界清晰、任务相互独立、可单独验证。
+优化评审页右侧批注栏的布局与导出能力，解决底部操作按钮被挤出可视区、以及无法按当前视图导出批注的问题。
 
-### 1. 页面功能画像（buildPageProfile）
-每页识别为功能点清单，每个功能点恰好归属一类（避免视角重叠）：
+### 1. 底部固定与高度约束
 
-| 类别 | 识别内容 |
+- **外层布局**：`Review` 页的 `main-content` 改为 `display: flex; flex-direction: column; height: 100%`，顶部标题行自然占用高度，`.review-layout` 通过 `flex: 1; min-height: 0` 填满剩余视口空间，不再依赖 `calc(100vh - ...)` 硬编码。
+- **面板布局**：`.annotation-panel` 改为 `display: flex; flex-direction: column; overflow: hidden; min-height: 0`。
+- **滚动容器**：新增 `.annotation-list`，负责 `flex: 1; overflow-y: auto; min-height: 0`，只有批注列表本身滚动；标题栏、筛选器、排序器、底部操作栏均不滚动。
+- **底部操作栏**：新增 `.annotation-panel-footer`，`flex-shrink: 0`，始终固定在面板底部，包含「生成修改方案」与「导出」两组操作。
+
+### 2. 排序状态
+
+新增排序选择器（位于筛选器下方）：
+
+| 排序项 | 行为 |
 |---|---|
-| 核心交互 | 表单（含 method/action/字段数）、导航链接、按钮 |
-| 数据展示 | 表格（行列数）、列表、图片组、卡片网格 |
-| 用户操作流程 | 搜索流程、分页、多步向导（wizard/stepper） |
-| 状态流转 | 下拉联动、单选/多选、弹层、Tab 切换、禁用/加载初始态 |
+| 默认顺序 | 保持后端返回顺序 |
+| 时间倒序 | 按 `created_at` 从新到旧 |
+| 时间正序 | 按 `created_at` 从旧到新 |
+| 状态排序 | 待处理 → 已解决 → 不采纳，同状态下时间倒序 |
 
-### 2. 四段式任务描述
-每个拆解任务的描述固定为四段（Markdown，GitLab Issue 同样适用）：
-1. **页面功能概述** — 功能点统计 + 页面性质 + 主要区块
-2. **本任务覆盖的功能点** — 逐点列出（类别标注），并声明「页面共 N 点，本任务覆盖 M 点，其余由其他任务承接，请勿重复实现」
-3. **实现范围** — 按功能点 kind 生成实现条目 + 与原型一致性约束 + 任务边界声明
-4. **验收标准** — 按功能点 kind 生成可勾选的验证条目（如「表单提交时数据以 POST 发送至 X，必填项缺失有校验提示」）+ 独立可验证性 + 不引入他人功能点
+### 3. 筛选感知的导出
 
-### 3. 不遗漏、不重叠的分配算法
-- **page 粒度**：全部功能点进单一整页任务，天然全覆盖
-- **feature 粒度**：按 **DOM 位置**归属——功能点位置落在哪个 heading 区块 `[h.pos, next.pos)` 内即归该任务；首个 heading 之前的页面级元素（全局导航等）归收尾任务；名称双向匹配兜底
-- **interaction 粒度**：交互类功能点一点一任务；数据展示/流程/状态类归「布局与通用功能」收尾任务
-- 每页未被认领的功能点生成「通用功能收尾」任务兜底 → 三种粒度下功能点对账恒等（覆盖数之和 = 页面总数，零重叠）
-
-### 4. 数据增强
-- 任务新增持久化字段：`feature_points[]`（category/kind/name）、`page_feature_count`
-- 描述尾部元信息新增「功能点覆盖：M/N」
+- **导出入口**：底部操作栏内的格式下拉 +「导出」按钮。
+- **格式支持**：
+  - **JSON**：`application/json;charset=utf-8`，无 BOM， pretty-print（2 空格）。导出的 JSON 包含 `exportedAt`、`filter`、`sort`、`total` 元信息及 `annotations` 数组，数组字段为 `id/content/status/author/page/x/y/created_at/element_info`。
+  - **CSV**：`text/csv;charset=utf-8`，带 UTF-8 BOM（`\uFEFF`），便于 Windows Excel 正确识别中文；字段包含逗号/引号/换行时按 RFC 4180 转义；`element_info` 用 `JSON.stringify` 整段写入。
+- **数据范围**：严格使用当前经过筛选 **和** 排序后的 `filtered` 数组，不会导出全部批注。文件名包含项目名、筛选标签、排序标签和时间戳，例如 `批注_优美丝路_待处理_时间倒序_20260820_094556.json`。
 
 ## 验证情况
 
-- `node --check` 语法通过；本地 3001 后端运行新代码
-- 本地冒烟（项目 10048 三页商城）：三种粒度覆盖审计全部通过（feature 粒度首页 3+3=6、购物车 3/3、商品列表 3/3，零重叠）；generate 持久化字段正常；测试任务已清理
-- 线上验证（项目 3 优美丝路，feature 粒度）：94 个任务，功能点对账 10+9+29=48、14+3+29=46 全部吻合
-- 纯规则引擎，零模型 API 消耗
+- `npm run build` 通过，产物 `dist/assets/index-CJXdV5AY.js` 包含新代码。
+- 本地静态预览（`python3 -m http.server 5175`）页面与 JS 资源 200 正常。
+- `git push` 因 HTTP 代理 502 失败一次，随后使用 `git -c http.proxy= -c https.proxy= push` 成功。
+- EdgeOne 部署成功：`dpwfgre0mx0m`；自定义域名 `protobuddy.20140107.xyz` 返回 200，线上 JS bundle 确认包含 `annotation-panel-footer`、`annotation-export`、`批注_` 等标记。
+
+## 文件变更
+
+- `frontend/src/components/AnnotationLayer.jsx`：新增排序状态、导出逻辑、固定底部操作栏，使用 `useMemo` 计算筛选+排序结果。
+- `frontend/src/pages/Review.jsx`：传递 `projectName`；为外层容器与 `.review-layout` 设置 flex 列布局。
+- `frontend/src/styles.css`：新增/调整 `.annotation-list`、`.annotation-panel-footer`、`.annotation-sort`、`.annotation-export`、`.review-layout` 等样式。
 
 ## 后续事项
 
-1. 真实 CIS 原型 heading 较少时，收尾任务功能点偏多（如 29/48）——属「不遗漏」优先的合理兜底，可用 interaction 粒度或 split 手动细分
-2. 本地 3001 后端仍在运行
-3. 部署 token 从本地 db.json 项目 1 的 `edgeone_token` 字段读取（CLI 登录态已过期时用 `-t` 传参）
+1. 当前导出由前端在浏览器中完成，适合批注量 < 10k 的场景；若后续需要服务端导出（如一次性导出全项目历史），可复用同样的筛选/排序逻辑在后端实现。
+2. 本地 3001 后端仍在运行。
