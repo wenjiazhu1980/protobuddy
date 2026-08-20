@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getById, query, insert, update } from '../db.js';
-import { generatePlanWithMakers, generateRuleBasedPlan, isReasoningModelId, CONTEXT_LIMITS } from '../services/makersModels.js';
+import { generatePlanWithMakers, generateRuleBasedPlan, isReasoningModelId, CONTEXT_LIMITS, INPUT_CHAR_BUDGET } from '../services/makersModels.js';
 import { checkConsistency, buildConsistencyFeedback } from '../services/consistency.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
@@ -8,6 +8,72 @@ import { prepareForDeploy, apiBaseFromReq } from '../services/generator.js';
 import { requireOwnerAuth } from '../services/ownerAuth.js';
 
 const router = Router();
+
+// ---- Batch generation helpers ---------------------------------------------
+// When a plan request carries many annotations, packing ALL of them plus the
+// relevant file context into a single prompt can overflow the input budget and
+// force the budget guard to drop files (harming old_code precision). Batched
+// generation splits annotations into small, focused batches; each batch only
+// carries the files relevant to ITS annotations (target page + sibling files
+// + generator scripts), so every batch stays well under budget and the model
+// sees complete context for the annotations it must answer.
+
+// File ranking for a given set of target pages: annotated pages first, then
+// sibling files in the same directory (likely shared components/modals), then
+// Python generator scripts, then everything else.
+const makeRank = (targetPages) => {
+  const targetDirs = new Set(targetPages.map(p => p.split('/').slice(0, -1).join('/') || '.'));
+  return (f) => {
+    const hit = targetPages.findIndex(p => f.path === p || f.path.endsWith('/' + p));
+    if (hit !== -1) return hit;
+    const dir = f.path.split('/').slice(0, -1).join('/') || '.';
+    if (targetDirs.has(dir)) return 100;
+    if (/\.py$/i.test(f.path)) return 300;
+    return 999;
+  };
+};
+
+// Group annotations by page, keeping original order within a page.
+const groupByPage = (annotations) => {
+  const map = new Map();
+  for (const a of annotations) {
+    const key = a.page || 'index.html';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(a);
+  }
+  return [...map.values()];
+};
+
+// Greedily pack page groups into batches of at most maxPerBatch annotations.
+// Annotations on the same page stay together (unless a single page has more
+// than maxPerBatch — then that page is chunked on its own).
+const buildBatches = (annotations, maxPerBatch) => {
+  const groups = groupByPage(annotations);
+  const batches = [];
+  let cur = [];
+  for (const g of groups) {
+    for (let i = 0; i < g.length; i += maxPerBatch) {
+      const chunk = g.slice(i, i + maxPerBatch);
+      if (cur.length > 0 && cur.length + chunk.length > maxPerBatch) {
+        batches.push(cur);
+        cur = [];
+      }
+      cur.push(...chunk);
+    }
+  }
+  if (cur.length > 0) batches.push(cur);
+  return batches;
+};
+
+// Coarse whole-prompt char estimate used ONLY to decide whether to batch:
+// annotation text + sum of the file payloads that would be packed.
+const estimatePromptChars = (anns, files) => {
+  const annText = anns
+    .map(a => `[x] Page: ${a.page || 'index.html'}, Comment: "${a.content}"`.length)
+    .reduce((s, n) => s + n, 0);
+  const fileText = files.reduce((s, f) => s + ((f.content?.data || '').length), 0);
+  return annText + fileText;
+};
 
 // Redeploy a project after files changed (apply or rollback). Shared so both
 // paths get identical semantics: generator handling (local run vs external
@@ -105,22 +171,9 @@ router.post('/:id/plan', async (req, res) => {
   // 30-60s to think).
   const fileRecords = await query('files', f => String(f.project_id) === String(req.params.id));
   const targetPages = [...new Set(annotations.map(a => a.page).filter(Boolean))];
-  const targetDirs = new Set(targetPages.map(p => p.split('/').slice(0, -1).join('/') || '.'));
-  const rank = f => {
-    const hit = targetPages.findIndex(p => f.path === p || f.path.endsWith('/' + p));
-    if (hit !== -1) return hit;
-    const dir = f.path.split('/').slice(0, -1).join('/') || '.';
-    // Sibling files in the same directory as the annotated page likely share
-    // components/modals and help the model produce precise old_code snippets.
-    if (targetDirs.has(dir)) return 100;
-    // Generator scripts rank above unrelated pages — agents.md conventions
-    // require structural edits to go into the generator (e.g. _gen_pages.py),
-    // so it must reliably make it into the model's context.
-    if (/\.py$/i.test(f.path)) return 300;
-    return 999;
-  };
   const tier = isReasoningModelId(project.makers_model || '') ? 'reasoning' : 'standard';
   const fileCap = CONTEXT_LIMITS[tier].maxFiles;
+  const rank = makeRank(targetPages);
   const selectedFiles = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, fileCap);
   const filesWithContent = [];
   for (const f of selectedFiles) {
@@ -250,26 +303,135 @@ router.post('/:id/plan', async (req, res) => {
     return { ...c, file_path: healed };
   });
 
+  // ---- Batched vs single-pass generation ----------------------------------
+  // Batching decision: non-reasoning model (fast enough for several API calls
+  // inside the 120s function limit) + at least BATCH_MIN_ANNOTATIONS open
+  // annotations + the whole-context estimate overflowing most of the input
+  // budget. When batched, each batch carries only the files relevant to ITS
+  // annotations (target page + same-dir siblings + generator scripts), so
+  // every API call sees complete context instead of a dropped-file budget.
+  const BATCH_MIN_ANNOTATIONS = 6;
+  const BATCH_TRIGGER_RATIO = 0.85;
+  const MAX_ANNOTATIONS_PER_BATCH = 5;
+  const batchBudget = INPUT_CHAR_BUDGET[tier];
+  const wholeEstimate = estimatePromptChars(annotations, filesWithContent);
+  // ?batch=force | off | auto — force/disable batching explicitly. `auto` (or
+  // no param) batches when: non-reasoning model + >= BATCH_MIN_ANNOTATIONS +
+  // whole-context estimate overflows most of the input budget.
+  const batchMode = (req.query.batch || 'auto').toLowerCase();
+  const shouldBatch = tier === 'standard'
+    && annotations.length >= BATCH_MIN_ANNOTATIONS
+    && (batchMode === 'force'
+      || (batchMode !== 'off' && wholeEstimate > batchBudget * BATCH_TRIGGER_RATIO));
+
   // Generate plan — wrapped in try/catch so that ANY failure (API timeout,
   // JSON parse error, unexpected throw) falls back to rule-based generation
   // instead of returning a bare 500 to the client.
   const genStartTime = Date.now();
   let result;
-  try {
-    result = await generatePlanWithMakers(
-      project.makers_key,
-      annotations,
-      filesWithContent,
-      project.makers_model || undefined,
-      agentsRules,
-      '',           // retryFeedback
-      fnStartTime   // pass function start time for dynamic timeout
-    );
-  } catch (genErr) {
-    console.warn(`[plans] Generation threw: ${genErr.message}. Falling back to rule-based plan.`);
-    result = generateRuleBasedPlan(annotations, filesWithContent);
-    result.fallbackReason = `Generation error: ${genErr.message}`;
-    result.method = 'rule-based';
+  let batchedInfo = null;
+  if (shouldBatch) {
+    const batches = buildBatches(annotations, MAX_ANNOTATIONS_PER_BATCH);
+    console.log(`[plans] Batched generation: ${annotations.length} annotations -> ${batches.length} batch(es) (est ${wholeEstimate} chars vs budget ${batchBudget})`);
+    const merged = {
+      changes: [],
+      summaryParts: [],
+      model: project.makers_model || '',
+      method: 'makers',
+      fallbackReason: '',
+      contextMeta: null,
+      anyMakers: false
+    };
+    for (let i = 0; i < batches.length; i++) {
+      const batchAnn = batches[i];
+      // Pick the files relevant to THIS batch only.
+      const bTargetPages = [...new Set(batchAnn.map(a => a.page).filter(Boolean))];
+      const bRank = makeRank(bTargetPages);
+      const bCandidates = [...fileRecords].sort((a, b) => bRank(a) - bRank(b)).slice(0, fileCap);
+      const bFiles = [];
+      for (const f of bCandidates) {
+        const c = await getContent(f.path);
+        if (c !== null) bFiles.push({ path: f.path, content: c });
+      }
+      console.log(`[plans] Batch ${i + 1}/${batches.length}: ${batchAnn.length} annotation(s), ${bFiles.length} file(s)`);
+      let br;
+      try {
+        br = await generatePlanWithMakers(
+          project.makers_key,
+          batchAnn,
+          bFiles,
+          project.makers_model || undefined,
+          agentsRules,
+          '',           // retryFeedback — per-batch retry not run to stay in time budget
+          fnStartTime   // dynamic timeout keeps every call inside 120s
+        );
+      } catch (batchErr) {
+        console.warn(`[plans] Batch ${i + 1} generation threw: ${batchErr.message}; rule-based fallback for this batch`);
+        br = generateRuleBasedPlan(batchAnn, bFiles);
+        br.fallbackReason = `Batch ${i + 1} generation error: ${batchErr.message}`;
+        br.method = 'rule-based';
+      }
+      if (br.method === 'makers') merged.anyMakers = true;
+      if (br.fallbackReason) {
+        merged.fallbackReason = merged.fallbackReason
+          ? `${merged.fallbackReason} | ${br.fallbackReason}`
+          : br.fallbackReason;
+      }
+      merged.changes.push(...(br.plan?.changes || []));
+      merged.summaryParts.push(`批${i + 1}(${batchAnn.length}条): ${(br.plan?.summary || '').slice(0, 60)}`);
+
+      // Merge per-batch context metadata into one aggregated record.
+      const cm = br.contextMeta || {};
+      if (!merged.contextMeta) {
+        merged.contextMeta = {
+          ...cm,
+          reasoning: false,
+          batched: true,
+          batch_count: batches.length,
+          warnings: [],
+          files_omitted: [],
+          files_truncated: []
+        };
+      }
+      const M = merged.contextMeta;
+      M.files_included = (M.files_included || 0) + (cm.files_included || 0);
+      M.prompt_chars = (M.prompt_chars || 0) + (cm.prompt_chars || 0);
+      M.est_input_tokens = (M.est_input_tokens || 0) + (cm.est_input_tokens || 0);
+      M.completion_tokens = (M.completion_tokens || 0) + (cm.completion_tokens || 0);
+      M.output_truncated = M.output_truncated || !!cm.output_truncated;
+      M.files_omitted.push(...(cm.files_omitted || []));
+      M.files_truncated.push(...(cm.files_truncated || []));
+      M.warnings.push(...(cm.warnings || []).map(w => `[批${i + 1}] ${w}`));
+    }
+    result = {
+      success: true,
+      plan: {
+        summary: `本方案按 ${batches.length} 批生成，共 ${merged.changes.length} 条修改建议，覆盖 ${annotations.length} 条批注。${merged.summaryParts.join('；')}`,
+        changes: merged.changes
+      },
+      model: merged.model,
+      method: merged.anyMakers ? 'makers' : 'rule-based',
+      fallbackReason: merged.fallbackReason || '',
+      contextMeta: merged.contextMeta
+    };
+    batchedInfo = { batched: true, batch_count: batches.length };
+  } else {
+    try {
+      result = await generatePlanWithMakers(
+        project.makers_key,
+        annotations,
+        filesWithContent,
+        project.makers_model || undefined,
+        agentsRules,
+        '',           // retryFeedback
+        fnStartTime   // pass function start time for dynamic timeout
+      );
+    } catch (genErr) {
+      console.warn(`[plans] Generation threw: ${genErr.message}. Falling back to rule-based plan.`);
+      result = generateRuleBasedPlan(annotations, filesWithContent);
+      result.fallbackReason = `Generation error: ${genErr.message}`;
+      result.method = 'rule-based';
+    }
   }
 
   // Even after fallback, if something is still wrong, try one more time
@@ -300,6 +462,7 @@ router.post('/:id/plan', async (req, res) => {
   const elapsedMs = Date.now() - fnStartTime;
   const RETRY_BUDGET_MS = 40000; // need at least 40s left to attempt a retry
   if (result.method === 'makers'
+    && !batchedInfo
     && (errCount(validations) > 0 || consistency.uncovered_count > 0)
     && elapsedMs < (120000 - RETRY_BUDGET_MS)) {
     const feedback = [
@@ -340,6 +503,7 @@ router.post('/:id/plan', async (req, res) => {
     }
     retried = true;
   } else if (result.method === 'makers'
+    && !batchedInfo
     && (errCount(validations) > 0 || consistency.uncovered_count > 0)
     && elapsedMs >= (120000 - RETRY_BUDGET_MS)) {
     console.log(`[plans] Skipping auto-retry: only ${Math.round((120000 - elapsedMs) / 1000)}s budget left (first gen took ${Math.round(elapsedMs / 1000)}s), would exceed 120s CF timeout`);
@@ -440,6 +604,8 @@ router.post('/:id/plan', async (req, res) => {
     model: result.model || '',
     fallback_reason: result.fallbackReason || '',
     context_meta: result.contextMeta || null,
+    batched: batchedInfo ? batchedInfo.batched : false,
+    batch_count: batchedInfo ? batchedInfo.batch_count : null,
     precheck,
     consistency,
     scorecard
@@ -783,5 +949,8 @@ router.post('/plans/:planId/rollback', requireOwnerAuth, async (req, res) => {
     deployResult: deployResult ? { method: deployResult.method, url: deployResult.url } : null
   });
 });
+
+// Exported for unit testing the batching logic.
+export { makeRank, groupByPage, buildBatches, estimatePromptChars };
 
 export default router;

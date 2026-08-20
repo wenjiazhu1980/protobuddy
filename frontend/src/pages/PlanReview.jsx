@@ -386,6 +386,11 @@ export default function PlanReview() {
                     <strong>
                       {truncated ? '✕ 模型输出被截断：' : hasWarnings ? '⚠ 上下文预警：' : '✓ 上下文用量：'}
                     </strong>
+                    {cm.batched && (
+                      <span style={{ marginLeft: 4, padding: '1px 6px', background: '#ede9fe', border: '1px solid #c4b5fd', borderRadius: 4, color: '#5b21b6' }}>
+                        {cm.batch_count} 批生成
+                      </span>
+                    )}
                     {' '}输入约 {cm.est_input_tokens ?? '—'} tokens（{cm.files_included ?? '—'}/{cm.files_considered ?? '—'} 个文件）
                     {cm.files_truncated?.length > 0 && `，${cm.files_truncated.length} 个大文件仅摘录`}
                     {' · '}输出 {cm.completion_tokens ?? '—'}/{cm.max_output_tokens ?? '—'} tokens
@@ -433,8 +438,9 @@ export default function PlanReview() {
               )}
               <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                 基于批注: {selectedPlan.annotations?.length || 0} 条 ·
-                修改建议: {selectedPlan.changes?.length || 0} 条 ·
-                生成时间: {new Date(selectedPlan.created_at).toLocaleString('zh-CN')}
+                修改建议: {selectedPlan.changes?.length || 0} 条
+                {selectedPlan.batched && ` · 分批生成 ${selectedPlan.batch_count || ''} 批`}
+                {' · '}生成时间: {new Date(selectedPlan.created_at).toLocaleString('zh-CN')}
               </div>
             </div>
           </div>

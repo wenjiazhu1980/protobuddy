@@ -65,7 +65,7 @@ export const OUTPUT_TOKEN_LIMITS = {
 // far larger (64k–128k tokens); this budget exists to keep generation inside
 // the 120s function timeout. Crossing INPUT_WARN_RATIO triggers a recorded
 // warning (surfaced in the UI) instead of a silent cut.
-const INPUT_CHAR_BUDGET = {
+export const INPUT_CHAR_BUDGET = {
   reasoning: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET_REASONING, 160000),
   standard: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET, 350000),
 };
