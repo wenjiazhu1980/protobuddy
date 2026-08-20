@@ -1,55 +1,58 @@
-# 任务概览：Agent 上下文二次扩容 + 关键文件保护
+# 任务概览：按批注分批生成方案
 
-**提交**: main · 2 个文件改动 · 2026-08-20 · 已部署 protobuddy.20140107.xyz（deployment dptkkoie1fgz）
+**提交**: main · 4 个文件改动 · 2026-08-20 · 已部署 protobuddy.20140107.xyz（deployment dpruw10gisvj）
 
 ## 背景
 
-线上项目生成方案 #498（deepseek/deepseek-chat）时，输入 187409/190000 字符几乎打满，仅 9/14 个文件就耗尽预算，同模块 5 个 merchant 页面被省略，生成器脚本 `_gen_pages.py` 仅摘录 → 匹配质量 50、预检未通过。本次在「上下文限制集中化 + 截断预警」基础上继续扩容，并优化文件选择策略，避免关键文件被挤出。
+上一轮将非推理模型输入预算扩到 350k 字符后，单个大型原型项目（如项目 3 的 phase-2 多页面站点）仍有上下文不足风险：文件太大、批注太多时，预算守卫会省略关键文件，导致 `old_code` 匹配质量下降。继续堆字符会撞上 Cloud Function 120s 硬超时——本方案改为**按批注分批生成**：每批只带自身相关文件上下文，彻底绕开单次输入窗口瓶颈。
 
-## 本次改动
+## 功能设计
 
-### 1. 继续扩容输入/输出窗口（makersModels.js）
+### 1. 触发条件（auto 自动）
 
-- **非推理模型**（deepseek-chat / @makers/hy3）：
-  - 整 prompt 字符预算 190000 → **350000**
-  - 最大文件数 14 → **24**
-  - 单文件上限 50000 → **90000**
-  - 小文件全显阈值 24000 → **48000**
-  - 输出 token 上限 8000 → **12000**
-- **推理模型**（deepseek-v4 / kimi-k2 / minimax）小幅提升：
-  - 整 prompt 字符预算 110000 → **160000**
-  - 最大文件数 8 → **10**
-  - 单文件上限 20000 → **30000**
-  - 小文件全显阈值 8000 → **12000**
-- 所有参数仍支持环境变量覆盖，无需改代码即可按项目/环境调整。
+- **非推理模型**（deepseek-chat / @makers/hy3）——推理模型太慢，多批调用会超 120s
+- open 批注数 ≥ **6 条**
+- 全量上下文估算（批注文本 + 候选文件字符数）超过输入预算的 **85%**
 
-### 2. 关键文件优先保护
+### 2. 分批算法
 
-- **生成器脚本优先全显**：对 `_gen*.py` / `generate*.py` / `build.py` / `make*.py` 等 Python 生成器脚本，将小文件判定阈值提升到单文件上限，尽量完整送入上下文，避免仅摘录导致 `old_code` 不精确。
-- **跨文件关键词 hint**：从批注内容自动提取 CJK 4+ 字符词与英文标识符，作为 excerpt 搜索关键词， surfaced 同模块/共享组件文件中的相关片段。
-- **plans.js 排序优化**：文件选择时，与目标页面**同目录**的文件优先级仅次于目标页面本身（100），高于生成器脚本（300），远高于无关页面（999）。
-- **预算守卫智能丢弃**：不再简单从尾部 pop，而是按重要性丢弃——目标页面（1000） > 生成器脚本（800） > 同目录文件（500） > 其他 `.py`（400） > 无关文件（0）。
+- 按页面分组（同页批注尽量同批），贪心打包，每批 ≤ **5 条**批注；单页批注超限时单独切分
+- 每批用 `makeRank(该批页面)` 重新选取文件：目标页面(0) > 同目录(100) > 生成器脚本(300) > 无关文件(999)，只携带该批真正相关的文件
 
-### 3. 保留的截断预警机制
+### 3. 合并与质量保障
 
-- 输入侧：超预算 85% 黄色预警，列出被省略/摘录的文件。
-- 输出侧：`finish_reason=length` 时抢救完整 change 对象并标记 `output_truncated`；输出用量 ≥ 85% 上限预警。
-- 前端 PlanReview.jsx 继续展示 context_meta 概览/预警横幅。
+- 每批独立调用模型后：changes 拼接、contextMeta 聚合（文件数/prompt 字符/估测 token/输出 token 求和，warnings 带 `[批N]` 前缀）、summary 汇总「N 批生成共 X 条修改覆盖 Y 条批注」
+- 合并结果继续走全量 dry-run 预检、批注一致性检查、评分卡——与单批生成同一套质量门禁
+- 分批模式跳过全量 auto-retry（时间预算不允许），每批失败自动用规则引擎兜底该批
+
+### 4. 显式控制
+
+- `?batch=force` 强制分批（小项目测试/用户手动控制）
+- `?batch=off` 关闭分批（保持单批）
+- 默认 `auto` 自动判断
+
+### 5. 前端展示
+
+- 方案审核页 context_meta 横幅显示紫色「N 批生成」徽章
+- 底部摘要行显示「分批生成 N 批」
 
 ## 验证情况
 
-- `node --check` 通过（makersModels.js / plans.js）。
-- `vite build` 通过（bundle `assets/index-dnvvJuup.js`）。
-- 单测：新限制值正确、截断抢救函数仍能从 3 条切尾中救回 2 条。
-- 本地 E2E（项目 1，deepseek-chat）：生成 plan #10084，`budget=350000`、`max_output_tokens=12000`、`finish_reason=stop`。
-- 线上部署成功：`dptkkoie1fgz`，`protobuddy.20140107.xyz` 返回 200。
+- **单测**：buildBatches（7 条跨 3 页 → 2 批每批 ≤5；单页 12 条 → 5/5/2）、makeRank 排序、estimatePromptChars 估算均正确
+- **本地 E2E**（项目 1，deepseek-chat，7 条 open 批注）：
+  - `?batch=force` → batched=true, batch_count=2, 7 条 changes，summary/contextMeta 正确合并
+  - auto 模式 + 预算 5000 → 自动触发分批（est 4779 > 5000×85%）
+  - `?batch=off` → 单批正常
+  - 测试批注/方案已清理，项目数据恢复原状
+- 后端语法、前端构建通过；线上部署 `dpruw10gisvj`，protobuddy.20140107.xyz 200
 
 ## 文件变更
 
-- `backend/src/services/makersModels.js`：扩容 CONTEXT_LIMITS / OUTPUT_TOKEN_LIMITS / INPUT_CHAR_BUDGET；新增生成器脚本判定与全显策略；批注关键词提取；预算守卫按重要性丢弃。
-- `backend/src/routes/plans.js`：rank 函数增加同目录文件高优先级。
+- `backend/src/routes/plans.js`：新增 makeRank / groupByPage / buildBatches / estimatePromptChars（导出供单测）；分批生成主流程；plan 记录 batched/batch_count；分批模式跳过 auto-retry
+- `backend/src/services/makersModels.js`：导出 INPUT_CHAR_BUDGET 供 plans.js 判断
+- `frontend/src/pages/PlanReview.jsx`：「N 批生成」徽章 + 底部生成方式
 
 ## 后续事项
 
-1. **120s Cloud Function 硬超时仍是天花板**。350k 字符对非推理模型 deepseek-chat 仍处于安全区，但继续扩容需监控生成耗时；若仍不足，下一步应改走「按批注分批生成」或「只读相关函数/模板片段」，而非继续堆字符。
-2. 如需临时调参，优先使用环境变量（如 `MAKERS_INPUT_CHAR_BUDGET=500000`），无需重新部署代码。
+1. 分批后每批仍受 120s 硬超时约束——批数较多时建议用更快的非推理模型，或对超大单页项目继续做「函数级片段精读」。
+2. 推理模型暂不参与分批；如需支持，可考虑串行但每批更小（每批 2-3 条）并严格检测剩余时间预算。

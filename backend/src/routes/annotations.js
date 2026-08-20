@@ -31,7 +31,7 @@ router.post('/:id/annotations', async (req, res) => {
   const project = await getById('projects', req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
 
-  const { x, y, page, author, content, element_info } = req.body;
+  const { x, y, page, author, content, element_info, doc_x, doc_y } = req.body;
 
   if (x === undefined || y === undefined || !content) {
     return res.status(400).json({ error: 'x, y, and content are required' });
@@ -42,6 +42,8 @@ router.post('/:id/annotations', async (req, res) => {
     version: project.version || 1,
     x: parseFloat(x),
     y: parseFloat(y),
+    doc_x: doc_x !== undefined ? parseFloat(doc_x) : null,
+    doc_y: doc_y !== undefined ? parseFloat(doc_y) : null,
     page: page || 'index.html',
     author: author || 'Anonymous',
     content,

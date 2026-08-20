@@ -92,8 +92,9 @@ function injectScrollSyncScript(html) {
   if (!html || html.indexOf('__protoScrollInjected') !== -1) return html;
 
   const script = '<script>/*proto-scroll-sync*/!function(){if(window.__protoScrollInjected)return;window.__protoScrollInjected=1;' +
-    // 1. scroll sync
-    'function s(){try{window.parent.postMessage({__protoScroll:1,x:window.scrollX||0,y:window.scrollY||0},"*")}catch(e){}}' +
+    // 1. scroll sync (also report document size so the overlay can map
+    //    document-relative anchor percentages to the current viewport)
+    'function s(){try{window.parent.postMessage({__protoScroll:1,x:window.scrollX||0,y:window.scrollY||0,docWidth:Math.max(document.documentElement.scrollWidth||1,document.body.scrollWidth||1),docHeight:Math.max(document.documentElement.scrollHeight||1,document.body.scrollHeight||1)},"*")}catch(e){}}' +
     'window.addEventListener("scroll",s,{capture:true,passive:true});window.addEventListener("resize",s,{passive:true});' +
     // 2. page navigation reporting
     'function nav(){try{window.parent.postMessage({__protoNav:1,path:location.pathname+location.search},"*")}catch(e){}}' +
@@ -119,19 +120,25 @@ function injectScrollSyncScript(html) {
     'return _wopen.apply(this,arguments)};' +
     // 5. probe the DOM element under a viewport point (used by the annotation overlay)
     //    and answer position queries for already-anchored annotations.
-    'function buildPath(el){var path=[];var p=el;while(p&&p!==document.body){var seg=p.tagName?p.tagName.toLowerCase():"";if(p.id&&p.id.trim)seg+="#"+p.id.trim();else if(p.className&&typeof p.className==="string"){var c=p.className.trim().split(/\\s+/).slice(0,2);if(c.length&&c[0])seg+="."+c.join(".");}path.unshift(seg);p=p.parentNode;}return path.join(" > ");}' +
+    'function buildPath(el){var path=[];var p=el;while(p&&p!==document.body){var seg=p.tagName?p.tagName.toLowerCase():"";if(p.id&&p.id.trim)seg+="#"+p.id.trim();else{var c=(p.className&&typeof p.className==="string")?p.className.trim().split(/\\s+/).filter(function(x){return x}).slice(0,2):[];var nth=0;var sib=p;while(sib){if(sib.tagName===p.tagName)nth++;sib=sib.previousElementSibling;}if(c.length&&c[0])seg+="."+c.join(".");if(nth>1)seg+=":nth-of-type("+nth+")";}path.unshift(seg);p=p.parentNode;}return path.join(" > ");}' +
     'function buildElementInfo(el,dx,dy){' +
     'var info={found:true,tagName:el.tagName,id:el.id||"",className:el.className||""};' +
     'info.text=(el.innerText||el.textContent||"").slice(0,300);' +
     'info.isHeading=/^H[1-6]$/i.test(el.tagName);' +
     'try{info.fontSize=window.getComputedStyle(el).fontSize}catch(_){}' +
     'var r=el.getBoundingClientRect();' +
+    'var sx=window.scrollX||0,sy=window.scrollY||0;' +
+    'var docW=Math.max(document.documentElement.scrollWidth||1,document.body.scrollWidth||1);' +
+    'var docH=Math.max(document.documentElement.scrollHeight||1,document.body.scrollHeight||1);' +
     'info.rect={left:r.left,top:r.top,width:r.width,height:r.height,right:r.right,bottom:r.bottom};' +
-    'info.scrollX=window.scrollX||0;info.scrollY=window.scrollY||0;' +
-    'info.docRect={left:r.left+info.scrollX,top:r.top+info.scrollY,width:r.width,height:r.height};' +
+    'info.scrollX=sx;info.scrollY=sy;' +
+    'info.docRect={left:r.left+sx,top:r.top+sy,width:r.width,height:r.height};' +
+    'info.docSize={width:docW,height:docH};' +
     'if(typeof dx==="number"&&typeof dy==="number"){' +
     'info.offsetX=r.width>0?((dx-r.left)/r.width):0.5;' +
     'info.offsetY=r.height>0?((dy-r.top)/r.height):0;' +
+    'info.docX=(dx+sx)/docW;' +
+    'info.docY=(dy+sy)/docH;' +
     '}' +
     'info.path=buildPath(el);' +
     'var parent=el.parentNode;' +

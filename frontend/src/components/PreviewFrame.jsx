@@ -39,6 +39,12 @@ function normalizePage(p) {
  * that element and repositions the pin so it stays glued to the corresponding
  * content. If the element scrolls out of view, the pin fades out.
  *
+ * Document-relative fallback: if element anchoring is unavailable, the pin is
+ * positioned using document-relative percentages (docX/docY) reported by the
+ * probe script, combined with the current document size and scroll position.
+ * This avoids the container-percentage drift that happens when the iframe
+ * content is centered, scaled, or has a different aspect ratio than the overlay.
+ *
  * Sub-page navigation: the same injected script intercepts relative/same-origin
  * link clicks (keeping them inside the iframe) and reports the current page via
  * {__protoNav}. This component tracks the current page so annotation pins are
@@ -50,12 +56,17 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
   const probeRef = useRef({ nextId: 0, results: {} });
   const pendingQueryRef = useRef(null);
   const rafRef = useRef(null);
+  const draftInputRef = useRef(null);
 
   const [iframeKey, setIframeKey] = useState(0);
   const [scrollPos, setScrollPos] = useState({ x: 0, y: 0 });
+  const [docSize, setDocSize] = useState({ width: 1, height: 1 });
   const [currentPage, setCurrentPage] = useState('index.html');
   // Map annotation id -> latest __protoElementPos result for that element
   const [elementPositions, setElementPositions] = useState({});
+  // Inline annotation draft (replaces window.prompt)
+  const [draft, setDraft] = useState(null);
+  const [draftInput, setDraftInput] = useState('');
 
   // Construct preview URL - use relative path so it works in both dev and prod
   const previewUrl = `${API_BASE}/projects/${projectId}/preview/`;
@@ -64,8 +75,11 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
   useEffect(() => {
     setIframeKey(k => k + 1);
     setScrollPos({ x: 0, y: 0 });
+    setDocSize({ width: 1, height: 1 });
     setCurrentPage('index.html');
     setElementPositions({});
+    setDraft(null);
+    setDraftInput('');
   }, [version]);
 
   // Only show pins for annotations on the currently displayed page
@@ -83,13 +97,15 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
     if (!win) return;
 
     const targets = visibleAnnotations
-      .filter(ann => ann.element_info?.found && ann.element_info?.path)
+      .filter(ann => (ann.element_info?.found && ann.element_info?.path) || ann.content)
       .map(ann => ({
         __protoQuery: 1,
         id: ann.id,
-        elementId: ann.element_info.id || '',
-        path: ann.element_info.path,
-        text: (ann.element_info.text || '').slice(0, 120)
+        elementId: ann.element_info?.id || '',
+        path: ann.element_info?.path || '',
+        // For old annotations without element_info, try to locate the element by
+        // extracting a short keyword from the annotation content.
+        text: (ann.element_info?.text || ann.content || '').slice(0, 120)
       }));
 
     if (targets.length === 0) return;
@@ -126,6 +142,9 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
         x: typeof d.x === 'number' ? d.x : 0,
         y: typeof d.y === 'number' ? d.y : 0
       });
+      if (typeof d.docWidth === 'number' && typeof d.docHeight === 'number') {
+        setDocSize({ width: d.docWidth, height: d.docHeight });
+      }
       // Re-anchor pins after scrolling. The iframe reports scroll position
       // frequently, so throttle the DOM queries.
       scheduleElementQuery();
@@ -134,7 +153,10 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
       setCurrentPage(page);
       // New page starts at scroll 0; discard stale offset and positions
       setScrollPos({ x: 0, y: 0 });
+      setDocSize({ width: 1, height: 1 });
       setElementPositions({});
+      setDraft(null);
+      setDraftInput('');
       onPageChange?.(page);
       scheduleElementQuery();
     } else if (d.__protoElement) {
@@ -158,6 +180,13 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
     return () => clearTimeout(t);
   }, [currentPage, visibleAnnotationIds, scheduleElementQuery]);
 
+  // Focus the inline input when a draft appears.
+  useEffect(() => {
+    if (draft && draftInputRef.current) {
+      draftInputRef.current.focus();
+    }
+  }, [draft]);
+
   // Expose imperative navigation so the annotation panel can jump to a page tag.
   useImperativeHandle(ref, () => ({
     navigateTo: (page) => {
@@ -178,7 +207,10 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
         // Optimistically update currentPage; __protoNav will correct it once loaded.
         setCurrentPage(target);
         setScrollPos({ x: 0, y: 0 });
+        setDocSize({ width: 1, height: 1 });
         setElementPositions({});
+        setDraft(null);
+        setDraftInput('');
         onPageChange?.(target);
       }
     }
@@ -192,6 +224,20 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
     };
   }, []);
 
+  // Wait for the probe result for a given id (max total waitMs).
+  const waitForProbe = useCallback((probeId, waitMs = 600) => {
+    return new Promise((resolve) => {
+      const deadline = Date.now() + waitMs;
+      const check = () => {
+        const res = probeRef.current.results[probeId];
+        if (res) return resolve(res);
+        if (Date.now() >= deadline) return resolve(null);
+        setTimeout(check, 30);
+      };
+      check();
+    });
+  }, []);
+
   const handleClick = (e) => {
     if (!annotateMode) return;
     if (!containerRef.current) return;
@@ -203,8 +249,6 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
     const viewportY = e.clientY - rect.top;
 
     // Probe the DOM element under the click point via the injected iframe script.
-    // The user then types in the prompt, which gives the probe plenty of time
-    // to report back before we create the annotation.
     const probeId = ++probeRef.current.nextId;
     probeRef.current.results[probeId] = null;
     try {
@@ -216,36 +260,63 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
       // iframe not ready or cross-origin blocked; ignore and fall back to coordinates only
     }
 
-    // Prompt for annotation content
-    const content = window.prompt('请输入批注内容：');
-    if (content && content.trim()) {
-      const elementInfo = probeRef.current.results[probeId];
-      onAnnotate({
-        x: Math.round(x * 10) / 10,
-        y: Math.round(y * 10) / 10,
-        content: content.trim(),
-        page: currentPage,
-        element_info: elementInfo && elementInfo.found ? elementInfo : undefined
-      });
+    setDraft({ x, y, viewportX, viewportY, probeId, clientX: e.clientX, clientY: e.clientY });
+    setDraftInput('');
+  };
+
+  const submitDraft = async () => {
+    const content = draftInput.trim();
+    if (!content || !draft) {
+      setDraft(null);
+      setDraftInput('');
+      return;
     }
+
+    // Wait a moment for the probe result; the async wait is much more reliable
+    // than the old synchronous window.prompt because the event loop stays alive.
+    const elementInfo = await waitForProbe(draft.probeId, 500);
+
+    onAnnotate({
+      x: Math.round(draft.x * 10) / 10,
+      y: Math.round(draft.y * 10) / 10,
+      content,
+      page: currentPage,
+      element_info: elementInfo && elementInfo.found ? elementInfo : undefined,
+      // Persist document-relative coordinates as a robust fallback.
+      doc_x: elementInfo?.docX ?? (draft.x / 100),
+      doc_y: elementInfo?.docY ?? (draft.y / 100)
+    });
+
+    setDraft(null);
+    setDraftInput('');
+  };
+
+  const cancelDraft = () => {
+    setDraft(null);
+    setDraftInput('');
   };
 
   // Compute pin style for an annotation.
-  // Prefer element-based anchoring; fall back to legacy percentage + scroll offset.
+  // 1) Prefer element-based anchoring;
+  // 2) Fall back to document-relative coordinates (docX/docY) so the pin follows
+  //    the content even when the iframe is centered or scaled;
+  // 3) Last resort: legacy container-percentage + scroll offset.
   const getPinStyle = (ann) => {
+    const container = containerRef.current;
+    if (!container) {
+      return { left: `${ann.x}%`, top: `${ann.y}%`, transform: 'translate(-50%, -100%)', opacity: 0 };
+    }
+    const containerRect = container.getBoundingClientRect();
+
     const pos = elementPositions[ann.id];
-    const hasElement = ann.element_info?.found && pos?.found;
+    const hasElement = pos?.found;
 
     if (hasElement) {
-      const container = containerRef.current;
-      if (!container) {
-        return { left: `${ann.x}%`, top: `${ann.y}%`, transform: 'translate(-50%, -100%)', opacity: 0 };
-      }
-
-      const containerRect = container.getBoundingClientRect();
       const rect = pos.rect;
-      const offsetX = typeof ann.element_info.offsetX === 'number' ? ann.element_info.offsetX : 0.5;
-      const offsetY = typeof ann.element_info.offsetY === 'number' ? ann.element_info.offsetY : 0;
+      // Prefer the original offset stored at creation time; for old annotations
+      // re-anchored by text search, center the pin on the matched element.
+      const offsetX = typeof ann.element_info?.offsetX === 'number' ? ann.element_info.offsetX : 0.5;
+      const offsetY = typeof ann.element_info?.offsetY === 'number' ? ann.element_info.offsetY : 0.5;
 
       // Pin tip sits at the anchor point inside the element
       const x = rect.left + rect.width * offsetX;
@@ -270,14 +341,38 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
       };
     }
 
-    // Legacy fallback: annotations created before element anchoring
+    // Document-relative fallback: map the stored document percentage to the
+    // current viewport using the latest reported document size and scroll offset.
+    const docW = docSize.width || 1;
+    const docH = docSize.height || 1;
+    const dx = typeof ann.doc_x === 'number' ? ann.doc_x : (typeof ann.x === 'number' ? ann.x / 100 : 0);
+    const dy = typeof ann.doc_y === 'number' ? ann.doc_y : (typeof ann.y === 'number' ? ann.y / 100 : 0);
+
+    // Compute the document pixel position of the anchor point.
+    const docPixelX = dx * docW;
+    const docPixelY = dy * docH;
+
+    // Convert to viewport pixels (relative to the iframe's viewport origin).
+    const viewportX = docPixelX - scrollPos.x;
+    const viewportY = docPixelY - scrollPos.y;
+
+    // Convert viewport pixels to overlay percentages.
+    const leftPct = (viewportX / containerRect.width) * 100;
+    const topPct = (viewportY / containerRect.height) * 100;
+
+    // Keep the pin visible if it is near the viewport, even if the stored
+    // container percentage would place it outside due to a resized iframe.
+    const buffer = 32;
+    const inViewport = viewportY >= -buffer && viewportY <= containerRect.height + buffer
+      && viewportX >= -buffer && viewportX <= containerRect.width + buffer;
+
     return {
-      left: `${ann.x}%`,
-      top: `${ann.y}%`,
-      transform: `translate(-50%, -100%) translate(${-scrollPos.x}px, ${-scrollPos.y}px)`,
-      opacity: 1,
-      pointerEvents: 'auto',
-      transition: 'opacity 0.15s ease'
+      left: `${leftPct}%`,
+      top: `${topPct}%`,
+      transform: 'translate(-50%, -100%)',
+      opacity: inViewport ? 1 : 0,
+      pointerEvents: inViewport ? 'auto' : 'none',
+      transition: 'opacity 0.15s ease, top 0.1s ease-out, left 0.1s ease-out'
     };
   };
 
@@ -323,6 +418,60 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
             </div>
           );
         })}
+
+        {/* Inline annotation input (replaces window.prompt) */}
+        {draft && (
+          <div
+            className="annotation-draft"
+            style={{
+              position: 'absolute',
+              left: `${Math.min(Math.max(draft.x, 8), 92)}%`,
+              top: `${Math.min(Math.max(draft.y, 8), 92)}%`,
+              transform: 'translate(-50%, -100%)',
+              zIndex: 20,
+              width: 260,
+              background: 'white',
+              border: '1px solid var(--border)',
+              borderRadius: 8,
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+              padding: 10
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <textarea
+              ref={draftInputRef}
+              value={draftInput}
+              onChange={(e) => setDraftInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  submitDraft();
+                } else if (e.key === 'Escape') {
+                  cancelDraft();
+                }
+              }}
+              placeholder="请输入批注内容..."
+              rows={3}
+              style={{
+                width: '100%',
+                resize: 'vertical',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                padding: 8,
+                fontSize: 13,
+                lineHeight: 1.4,
+                outline: 'none',
+                boxSizing: 'border-box'
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+              <button className="btn btn-sm btn-secondary" onClick={cancelDraft}>取消</button>
+              <button className="btn btn-sm btn-primary" onClick={submitDraft} disabled={!draftInput.trim()}>
+                确认
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
