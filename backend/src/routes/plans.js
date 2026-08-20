@@ -105,13 +105,19 @@ router.post('/:id/plan', async (req, res) => {
   // 30-60s to think).
   const fileRecords = await query('files', f => String(f.project_id) === String(req.params.id));
   const targetPages = [...new Set(annotations.map(a => a.page).filter(Boolean))];
+  const targetDirs = new Set(targetPages.map(p => p.split('/').slice(0, -1).join('/') || '.'));
   const rank = f => {
     const hit = targetPages.findIndex(p => f.path === p || f.path.endsWith('/' + p));
     if (hit !== -1) return hit;
+    const dir = f.path.split('/').slice(0, -1).join('/') || '.';
+    // Sibling files in the same directory as the annotated page likely share
+    // components/modals and help the model produce precise old_code snippets.
+    if (targetDirs.has(dir)) return 100;
     // Generator scripts rank above unrelated pages — agents.md conventions
     // require structural edits to go into the generator (e.g. _gen_pages.py),
     // so it must reliably make it into the model's context.
-    return /\.py$/i.test(f.path) ? 500 : 999;
+    if (/\.py$/i.test(f.path)) return 300;
+    return 999;
   };
   const tier = isReasoningModelId(project.makers_model || '') ? 'reasoning' : 'standard';
   const fileCap = CONTEXT_LIMITS[tier].maxFiles;

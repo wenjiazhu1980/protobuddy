@@ -42,14 +42,14 @@ const envInt = (v, d) => {
 
 export const CONTEXT_LIMITS = {
   reasoning: {
-    maxFileChars: envInt(process.env.MAKERS_CTX_FILE_CHARS_REASONING, 20000),
-    maxFiles: envInt(process.env.MAKERS_CTX_MAX_FILES_REASONING, 8),
-    headLen: 1600, excerptBefore: 500, excerptAfter: 2800, maxExcerpts: 6, smallFileThreshold: 8000,
+    maxFileChars: envInt(process.env.MAKERS_CTX_FILE_CHARS_REASONING, 30000),
+    maxFiles: envInt(process.env.MAKERS_CTX_MAX_FILES_REASONING, 10),
+    headLen: 2000, excerptBefore: 600, excerptAfter: 3200, maxExcerpts: 7, smallFileThreshold: 12000,
   },
   standard: {
-    maxFileChars: envInt(process.env.MAKERS_CTX_FILE_CHARS, 50000),
-    maxFiles: envInt(process.env.MAKERS_CTX_MAX_FILES, 14),
-    headLen: 3000, excerptBefore: 1000, excerptAfter: 4000, maxExcerpts: 10, smallFileThreshold: 24000,
+    maxFileChars: envInt(process.env.MAKERS_CTX_FILE_CHARS, 90000),
+    maxFiles: envInt(process.env.MAKERS_CTX_MAX_FILES, 24),
+    headLen: 5000, excerptBefore: 1500, excerptAfter: 6000, maxExcerpts: 14, smallFileThreshold: 48000,
   },
 };
 
@@ -58,7 +58,7 @@ export const CONTEXT_LIMITS = {
 // keep the visible answer complete.
 export const OUTPUT_TOKEN_LIMITS = {
   reasoning: envInt(process.env.MAKERS_MAX_OUTPUT_TOKENS_REASONING, 16000),
-  standard: envInt(process.env.MAKERS_MAX_OUTPUT_TOKENS, 8000),
+  standard: envInt(process.env.MAKERS_MAX_OUTPUT_TOKENS, 12000),
 };
 
 // Packing budget (chars) for the whole prompt. Model-side context windows are
@@ -66,8 +66,8 @@ export const OUTPUT_TOKEN_LIMITS = {
 // the 120s function timeout. Crossing INPUT_WARN_RATIO triggers a recorded
 // warning (surfaced in the UI) instead of a silent cut.
 const INPUT_CHAR_BUDGET = {
-  reasoning: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET_REASONING, 110000),
-  standard: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET, 190000),
+  reasoning: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET_REASONING, 160000),
+  standard: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET, 350000),
 };
 const INPUT_WARN_RATIO = 0.85;
 
@@ -170,12 +170,39 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
         .map(a => (a.page || '').split('/').pop())
         .filter(p => p && p.length >= 4)
     )];
+
+    // Extract meaningful keywords from annotation content to search across files.
+    // These help surface relevant excerpts in sibling files (e.g. shared modal
+    // components) even when the file does not contain the target page name.
+    const annotationKeywords = [...new Set(
+      annotations
+        .flatMap(a => {
+          const text = String(a.content || '');
+          // Chinese terms: sequences of 4+ CJK chars; English/identifiers: words of 4+ chars
+          const cjk = text.match(/[\u4e00-\u9fff]{4,}/g) || [];
+          const words = (text.match(/[a-zA-Z0-9_-]{4,}/g) || [])
+            .filter(w => !/^(https?|www|com|cn|net|org|html|body|div|span|class|id|href|src)$/i.test(w));
+          return [...cjk, ...words];
+        })
+        .filter(Boolean)
+    )].slice(0, 12);
+
+    const isGeneratorScript = (path, data) => {
+      if (!/\.py$/i.test(path || '')) return false;
+      const head = String(data || '').slice(0, 2000).toLowerCase();
+      return /(_gen|generate|build|make|render|template|jinja|mako)/i.test(path) || head.includes('def ');
+    };
+
     const buildFileContext = (f) => {
       if (f.content?.binary) return '[binary file]';
       const data = f.content?.data || '';
-      if (data.length <= CTX.smallFileThreshold) return data;
+      // Generator scripts are the source of truth for generated HTML; try to
+      // include them whole up to the per-file cap instead of only the head.
+      const generator = isGeneratorScript(f.path, data);
+      const smallThreshold = generator ? CTX.maxFileChars : CTX.smallFileThreshold;
+      if (data.length <= smallThreshold) return data;
       let ctx = data.slice(0, CTX.headLen);
-      const hints = [...pageHints, 'def main'];
+      const hints = [...pageHints, ...annotationKeywords, 'def main'];
       let used = 0;
       for (const hint of hints) {
         let idx = 0;
@@ -194,7 +221,7 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
         if (used > CTX.maxExcerpts) break;
       }
       contextMeta.files_truncated.push(f.path);
-      return `(LARGE FILE — showing head + excerpts around the annotated page / entrypoint; offsets are approximate)\n${ctx}\n[END OF ${f.path} EXCERPTS]`;
+      return `(LARGE FILE — showing head + excerpts around the annotated page / entrypoint; offsets are approximate${generator ? '; generator script kept as complete as possible' : ''})\n${ctx}\n[END OF ${f.path} EXCERPTS]`;
     };
     let fileEntries = files.slice(0, CTX.maxFiles).map(f => ({
       path: f.path,
@@ -269,12 +296,28 @@ Generate a modification plan in JSON format.`;
 
     // ---- Input budget guard -------------------------------------------------
     // Measure the assembled prompt. If it exceeds the packing budget, drop the
-    // LEAST relevant files (the caller ranks files most→least relevant) until
-    // it fits, recording exactly what was omitted. Crossing the warn ratio
-    // records a warning instead of silently degrading context quality.
+    // LEAST relevant files until it fits, recording exactly what was omitted.
+    // Crossing INPUT_WARN_RATIO records a warning instead of silently degrading
+    // context quality. Protected classes (target pages, generator scripts,
+    // sibling files in the same directory) are dropped last.
+    const targetDirs = new Set(pageHints.map(p => p.split('/').slice(0, -1).join('/') || '.'));
+    const fileImportance = (entry) => {
+      const p = entry.path;
+      const base = p.split('/').pop() || '';
+      const dir = p.split('/').slice(0, -1).join('/') || '.';
+      if (pageHints.includes(base)) return 1000;
+      if (isGeneratorScript(p, entry.text)) return 800;
+      if (targetDirs.has(dir)) return 500;
+      if (/\.py$/i.test(p)) return 400;
+      return 0;
+    };
     let userPrompt = buildUserPrompt(buildFilesText());
     while (fileEntries.length > 1 && (systemPrompt.length + userPrompt.length) > charBudget) {
-      const dropped = fileEntries.pop();
+      // Sort by importance ascending and drop the least important entry while
+      // preserving the original order of the survivors for the final message.
+      const sorted = [...fileEntries].map((e, i) => ({ e, i, imp: fileImportance(e) })).sort((a, b) => a.imp - b.imp);
+      const dropIdx = sorted[0].i;
+      const [dropped] = fileEntries.splice(dropIdx, 1);
       contextMeta.files_included = fileEntries.length;
       contextMeta.files_omitted.push(`${dropped.path}（超出输入预算被省略）`);
       userPrompt = buildUserPrompt(buildFilesText());
