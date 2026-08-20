@@ -943,6 +943,11 @@ button {
   50% { opacity: 0.55; }
 }
 .task-card-top { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+.task-card-merge { cursor: pointer; }
+.task-card-merge:hover { background: var(--primary-light); }
+.task-merge-checkbox { width: 16px; height: 16px; margin-right: 4px; accent-color: var(--primary); cursor: pointer; flex-shrink: 0; }
+/* keep checkbox from being overlapped by adjacent badges */
+.task-merge-checkbox:focus { outline: 2px solid var(--primary); outline-offset: 2px; }
 .task-card-title { font-size: 13px; font-weight: 600; line-height: 1.4; margin-bottom: 4px; }
 .task-card-module { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
 .task-card-labels { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }

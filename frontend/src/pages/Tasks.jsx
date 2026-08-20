@@ -305,8 +305,13 @@ export default function Tasks() {
   };
 
   const handlePointerDown = (e, task) => {
-    // Ignore clicks on buttons, links, menus and merge-mode selection
-    if (mergeMode) return;
+    // In merge mode, clicking the card toggles selection instead of dragging.
+    if (mergeMode) {
+      if (e.target.closest('button, a, [data-no-drag], input[type="checkbox"]')) return;
+      e.preventDefault();
+      toggleSelect(task.id);
+      return;
+    }
     if (e.target.closest('button, a, [data-no-drag]')) return;
     const card = e.currentTarget;
     if (!card) return;
@@ -605,7 +610,7 @@ export default function Tasks() {
                   <div
                     key={t.id}
                     data-task-id={t.id}
-                    className={`task-card ${selected.has(t.id) ? 'task-card-selected' : ''} ${dragTaskId === t.id ? 'task-card-dragging' : ''} ${t.annotation_sync ? 'task-card-synced' : ''}`}
+                    className={`task-card ${selected.has(t.id) ? 'task-card-selected' : ''} ${dragTaskId === t.id ? 'task-card-dragging' : ''} ${t.annotation_sync ? 'task-card-synced' : ''} ${mergeMode ? 'task-card-merge' : ''}`}
                     onPointerDown={(e) => handlePointerDown(e, t)}
                     role="button"
                     tabIndex={0}
@@ -614,11 +619,23 @@ export default function Tasks() {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' || e.key === ' ') {
                         e.preventDefault();
-                        navigate(`/project/${id}/tasks/${t.id}`);
+                        if (mergeMode) toggleSelect(t.id);
+                        else navigate(`/project/${id}/tasks/${t.id}`);
                       }
                     }}
                   >
                     <div className="task-card-top">
+                      {mergeMode && (
+                        <input
+                          type="checkbox"
+                          className="task-merge-checkbox"
+                          checked={selected.has(t.id)}
+                          onChange={() => toggleSelect(t.id)}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`选择任务「${t.title}」`}
+                        />
+                      )}
                       <span className={`badge ${PRIORITY_META[t.priority]?.cls || 'badge-gray'}`}>{PRIORITY_META[t.priority]?.label || t.priority}</span>
                       {t.source === 'auto' && <span className="badge badge-blue">自动</span>}
                       {t.source === 'manual' && <span className="badge badge-gray">手动</span>}
