@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, getOwnerToken, buildRegenerateCmd } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
+import { useToast } from '../components/ToastContext.jsx';
 
 export default function Dashboard() {
   const { id } = useParams();
@@ -15,18 +16,13 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [deploying, setDeploying] = useState(false);
-  const [toast, setToast] = useState(null);
+  const { showToast } = useToast();
   const [editing, setEditing] = useState(false);
 
   const [manualUrl, setManualUrl] = useState('');
   const [showManualUrl, setShowManualUrl] = useState(false);
   const [lastDeploy, setLastDeploy] = useState(null);
   const [regenerateInfo, setRegenerateInfo] = useState(null);
-
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
-  };
 
   const load = useCallback(async () => {
     try {
@@ -238,10 +234,10 @@ export default function Dashboard() {
   return (
     <div className="main-content" style={{ paddingTop: 16 }}>
       {/* Breadcrumb + actions */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div className="page-header">
         <div>
-          <Link to="/" style={{ fontSize: 13 }}>← 返回项目列表</Link>
-          <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>{project.name}</h1>
+          <Link to="/" className="back-link">← 返回项目列表</Link>
+          <h1 className="page-title">{project.name}</h1>
           <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
             <span className={`badge ${project.status === 'deployed' ? 'badge-green' : project.status === 'deploying' ? 'badge-blue' : project.status === 'deploy_failed' ? 'badge-red' : 'badge-gray'}`}>
               {project.status === 'deployed' ? '已部署' : project.status === 'deploying' ? '部署中' : project.status === 'deploy_failed' ? '部署失败' : project.status === 'uploaded' ? '已上传' : '已创建'}
@@ -253,12 +249,6 @@ export default function Dashboard() {
               </span>
             )}
           </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/review`)}>评审</button>
-          <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/plan`)}>方案审核</button>
-          <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/tasks`)}>任务清单</button>
-          <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/settings`)}>设置</button>
         </div>
       </div>
 
@@ -325,7 +315,7 @@ export default function Dashboard() {
           {project.current_url ? (
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontWeight: 600, color: project.deploy_method === 'edgeone_deploying' ? 'var(--blue, #2563eb)' : project.deploy_method === 'local' || project.deploy_method === 'local_fallback' ? 'var(--orange)' : 'var(--green)' }}>
+                <span style={{ fontWeight: 600, color: project.deploy_method === 'edgeone_deploying' ? 'var(--primary)' : project.deploy_method === 'local' || project.deploy_method === 'local_fallback' ? 'var(--orange)' : 'var(--green)' }}>
                   ● {project.deploy_method === 'edgeone' ? 'EdgeOne 在线预览' : project.deploy_method === 'edgeone_deploying' ? 'EdgeOne 构建中…' : project.deploy_method === 'edgeone_manual' ? 'EdgeOne 在线预览（手动）' : project.deploy_method === 'cloud_preview' ? 'EdgeOne 全栈预览' : '本地托管预览'}
                 </span>
                 <a href={project.current_url} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13 }}>
@@ -462,8 +452,6 @@ export default function Dashboard() {
           )}
         </div>
       </div>
-
-      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   );
 }

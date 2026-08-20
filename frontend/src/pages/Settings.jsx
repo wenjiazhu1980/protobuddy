@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, getOwnerToken } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
+import { useToast } from '../components/ToastContext.jsx';
 
 export default function Settings() {
   const { id } = useParams();
@@ -19,7 +20,7 @@ export default function Settings() {
     makers_model: '@makers/hy3',
     custom_domain: ''
   });
-  const [toast, setToast] = useState(null);
+  const { showToast } = useToast();
   const [deleting, setDeleting] = useState(false);
 
   const handleDeleteProject = async () => {
@@ -64,11 +65,6 @@ export default function Settings() {
     { id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash（厂商·推理·快）' },
     { id: 'deepseek/deepseek-v4-pro', label: 'DeepSeek V4 Pro（厂商·推理·质量高）' }
   ];
-
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
-  };
 
   useEffect(() => {
     api.getProject(id).then(p => {
@@ -126,8 +122,8 @@ export default function Settings() {
   return (
     <div className="main-content" style={{ maxWidth: 640 }}>
       <div style={{ marginBottom: 16 }}>
-        <Link to={`/project/${id}`} style={{ fontSize: 13 }}>← 返回仪表盘</Link>
-        <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>项目设置</h1>
+        <Link to={`/project/${id}`} className="back-link">← 返回仪表盘</Link>
+        <h1 className="page-title">项目设置</h1>
       </div>
 
       <div className="card">
@@ -235,7 +231,7 @@ export default function Settings() {
           <span className="card-title" style={{ color: 'var(--red)' }}>危险操作</span>
         </div>
         <div className="card-body">
-          <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+          <div className="text-sm-muted" style={{ marginBottom: 12 }}>>
             删除项目「{project.name}」将永久移除所有原型文件、批注、修改方案与任务，且不可恢复。
             删除需要经过二次确认（输入项目名称）并验证 owner 密码。
           </div>
@@ -255,8 +251,6 @@ export default function Settings() {
           {saving ? '保存中...' : '保存设置'}
         </button>
       </div>
-
-      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   );
 }

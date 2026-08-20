@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, getOwnerToken, buildRegenerateCmd } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
+import { useToast } from '../components/ToastContext.jsx';
 
 export default function PlanReview() {
   const { id } = useParams();
@@ -12,14 +13,9 @@ export default function PlanReview() {
   const [selectedPlan, setSelectedPlan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [applying, setApplying] = useState(false);
-  const [toast, setToast] = useState(null);
+  const { showToast } = useToast();
   const [regenerateBanner, setRegenerateBanner] = useState(null);
   const [rollingBack, setRollingBack] = useState(false);
-
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
-  };
 
   const load = useCallback(async () => {
     try {
@@ -211,10 +207,10 @@ export default function PlanReview() {
   return (
     <div className="main-content" style={{ paddingTop: 16 }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div className="page-header">
         <div>
-          <Link to={`/project/${id}`} style={{ fontSize: 13 }}>← 返回仪表盘</Link>
-          <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>{project?.name} · 方案审核</h1>
+          <Link to={`/project/${id}`} className="back-link">← 返回仪表盘</Link>
+          <h1 className="page-title">{project?.name} · 方案审核</h1>
         </div>
         <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/review`)}>← 返回评审</button>
       </div>
@@ -436,7 +432,7 @@ export default function PlanReview() {
                   ))}
                 </div>
               )}
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              <div className="text-sm-muted">>
                 基于批注: {selectedPlan.annotations?.length || 0} 条 ·
                 修改建议: {selectedPlan.changes?.length || 0} 条
                 {selectedPlan.batched && ` · 分批生成 ${selectedPlan.batch_count || ''} 批`}
@@ -514,8 +510,6 @@ export default function PlanReview() {
           </div>
         </div>
       ) : null}
-
-      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   );
 }

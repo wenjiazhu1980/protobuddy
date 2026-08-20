@@ -49,7 +49,7 @@ export default function ProjectList() {
 
   return (
     <div className="main-content">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
+      <div className="page-header" style={{ marginBottom: 24 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>项目列表</h1>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>上传原型包 → 部署 → 协作评审 → Agent 生成方案 → 审核应用</p>
@@ -78,7 +78,7 @@ export default function ProjectList() {
             <div key={p.id} className="project-card" onClick={() => navigate(`/project/${p.id}`)}>
               <div className="project-card-name">{p.name}</div>
               <div style={{ marginBottom: 8 }}>{statusBadge(p.status)}</div>
-              {p.description && <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>{p.description}</div>}
+              {p.description && <div className="text-sm-muted" style={{ marginBottom: 8 }}>>{p.description}</div>}
               <div className="project-card-meta">
                 <span>版本 v{p.version || 0}</span>
                 {p.deploy_method === 'edgeone' && <span>EdgeOne 部署</span>}

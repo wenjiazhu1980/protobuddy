@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api.js';
 import PreviewFrame from '../components/PreviewFrame.jsx';
 import AnnotationLayer from '../components/AnnotationLayer.jsx';
+import { useToast } from '../components/ToastContext.jsx';
 
 export default function Review() {
   const { id } = useParams();
@@ -16,7 +17,7 @@ export default function Review() {
   const [generating, setGenerating] = useState(false);
   const [latestPlan, setLatestPlan] = useState(null);
   const [currentPage, setCurrentPage] = useState('index.html');
-  const [toast, setToast] = useState(null);
+  const { showToast } = useToast();
   const [taskCount, setTaskCount] = useState(null);
   const [panelOpen, setPanelOpen] = useState(() => {
     try { return localStorage.getItem('protobuddy.review.panel.open') !== 'false'; } catch { return true; }
@@ -25,11 +26,6 @@ export default function Review() {
   useEffect(() => {
     try { localStorage.setItem('protobuddy.review.panel.open', String(panelOpen)); } catch {}
   }, [panelOpen]);
-
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
 
   const load = useCallback(async () => {
     try {
@@ -140,10 +136,10 @@ export default function Review() {
   return (
     <div className="main-content review-main" style={{ paddingTop: 16, display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexShrink: 0 }}>
+      <div className="page-header" style={{ flexShrink: 0 }}>
         <div>
-          <Link to={`/project/${id}`} style={{ fontSize: 13 }}>← 返回仪表盘</Link>
-          <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>{project.name} · 评审</h1>
+          <Link to={`/project/${id}`} className="back-link">← 返回仪表盘</Link>
+          <h1 className="page-title">{project.name} · 评审</h1>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
@@ -153,14 +149,6 @@ export default function Review() {
           >
             {annotateMode ? '● 点击预览区添加批注（再次点击退出）' : '+ 添加批注'}
           </button>
-          <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/plan`)}>查看方案</button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => navigate(`/project/${id}/tasks`)}
-            title="查看本项目的开发任务清单（自动拆解 / 批注同步 / GitLab 推送）"
-          >
-            任务清单{taskCount != null ? ` (${taskCount})` : ''}
-          </button>
         </div>
       </div>
 
@@ -168,10 +156,7 @@ export default function Review() {
       <div
         className="review-layout"
         style={{
-          gridTemplateColumns: panelOpen ? '1fr 300px' : '1fr 44px',
-          transition: 'grid-template-columns 0.25s ease',
-          flex: 1,
-          minHeight: 0
+          '--review-cols': panelOpen ? '1fr 300px' : '1fr 44px',
         }}
       >
         {/* Preview with annotation overlay */}
@@ -257,7 +242,7 @@ export default function Review() {
             <div className="modal-body" style={{ textAlign: 'center', padding: 32 }}>
               <div className="spinner" style={{ width: 32, height: 32, margin: '0 auto 16px' }} />
               <div style={{ fontWeight: 600, marginBottom: 4 }}>Agent 正在生成修改方案</div>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>分析批注内容，生成结构化修改建议...</div>
+              <div className="text-sm-muted">>分析批注内容，生成结构化修改建议...</div>
             </div>
           </div>
         </div>
@@ -287,8 +272,6 @@ export default function Review() {
           </button>
         </div>
       )}
-
-      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   );
 }

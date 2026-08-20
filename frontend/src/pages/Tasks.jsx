@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, getOwnerToken } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
+import { useToast } from '../components/ToastContext.jsx';
 
 const STATUS_META = {
   todo: { label: '待办', color: 'var(--gray, #6b7280)' },
-  in_progress: { label: '进行中', color: 'var(--blue, #2563eb)' },
+  in_progress: { label: '进行中', color: 'var(--primary)' },
   done: { label: '已完成', color: 'var(--green, #16a34a)' }
 };
 const STATUS_KEYS = Object.keys(STATUS_META);
@@ -46,7 +47,7 @@ export default function Tasks() {
   const [config, setConfig] = useState(null);
   const [gitlabCfg, setGitlabCfg] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState(null);
+  const { showToast } = useToast();
 
   // generate modal
   const [showGen, setShowGen] = useState(false);
@@ -85,11 +86,6 @@ export default function Tasks() {
   // task card move menu
   const [menuTask, setMenuTask] = useState(null);
   const menuRef = useRef(null);
-
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
-  };
 
   const load = useCallback(async () => {
     try {
@@ -578,8 +574,8 @@ export default function Tasks() {
       {/* header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
         <div>
-          <Link to={`/project/${id}`} style={{ fontSize: 13 }}>← 返回仪表盘</Link>
-          <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>任务清单 <span style={{ fontSize: 13, color: 'var(--text-muted)', fontWeight: 400 }}>{project.name}</span></h1>
+          <Link to={`/project/${id}`} className="back-link">← 返回仪表盘</Link>
+          <h1 className="page-title">任务清单 <span className="page-subtitle">{project.name}</span></h1>
           <div style={{ display: 'flex', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
             <span className="badge badge-blue">{tasks.length} 个任务</span>
             <span className="badge badge-gray">预估 {totalEstimate}h</span>
@@ -730,7 +726,7 @@ export default function Tasks() {
                     {t.annotation_total > 0 && (
                       <div className="task-card-progress">
                         <div className="progress-track">
-                          <div className="progress-fill" style={{ width: `${t.progress || 0}%`, background: t.progress === 100 ? 'var(--green, #16a34a)' : 'var(--blue, #2563eb)' }} />
+                          <div className="progress-fill" style={{ width: `${t.progress || 0}%`, background: t.progress === 100 ? 'var(--green)' : 'var(--primary)' }} />
                         </div>
                         <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 6, whiteSpace: 'nowrap' }}>
                           {t.resolved_annotation_count}/{t.annotation_total} 批注
@@ -919,8 +915,6 @@ export default function Tasks() {
           </div>
         </div>
       )}
-
-      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   );
 }

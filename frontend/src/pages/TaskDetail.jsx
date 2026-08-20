@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, getOwnerToken } from '../api.js';
 import { useOwnerAuth } from '../components/OwnerAuthContext.jsx';
+import { useToast } from '../components/ToastContext.jsx';
 
 const STATUS_OPTIONS = [
   { value: 'todo', label: '待办' },
@@ -27,7 +28,7 @@ export default function TaskDetail() {
   const [task, setTask] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState(null);
+  const { showToast } = useToast();
 
   const [form, setForm] = useState({
     title: '',
@@ -42,11 +43,6 @@ export default function TaskDetail() {
   // split modal
   const [showSplit, setShowSplit] = useState(false);
   const [splitParts, setSplitParts] = useState([{ title: '', description: '', estimate_hours: 0 }]);
-
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 3500);
-  };
 
   useEffect(() => {
     (async () => {
@@ -156,8 +152,8 @@ export default function TaskDetail() {
   return (
     <div className="main-content" style={{ maxWidth: 860, paddingTop: 16 }}>
       <div style={{ marginBottom: 16 }}>
-        <Link to={`/project/${id}/tasks`} style={{ fontSize: 13 }}>← 返回任务清单</Link>
-        <h1 style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>{isNew ? '新建任务' : '任务详情'}</h1>
+        <Link to={`/project/${id}/tasks`} className="back-link">← 返回任务清单</Link>
+        <h1 className="page-title">{isNew ? '新建任务' : '任务详情'}</h1>
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>
@@ -315,8 +311,6 @@ export default function TaskDetail() {
           </div>
         </div>
       )}
-
-      {toast && <div className={`toast toast-${toast.type}`}>{toast.msg}</div>}
     </div>
   );
 }

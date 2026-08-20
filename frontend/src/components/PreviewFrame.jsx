@@ -393,7 +393,7 @@ function PreviewFrame({ projectId, version, annotateMode, onAnnotate, annotation
       >
         {visibleAnnotations.map((ann, idx) => {
           const statusClass = ann.status === 'resolved' ? 'resolved' : ann.status === 'rejected' ? 'rejected' : '';
-          const pinColor = ann.status === 'resolved' ? '#16a34a' : ann.status === 'rejected' ? '#94a3b8' : '#f97316';
+          const pinColor = ann.status === 'resolved' ? 'var(--green)' : ann.status === 'rejected' ? 'var(--gray-400)' : 'var(--orange)';
           const style = getPinStyle(ann);
           return (
             <div
