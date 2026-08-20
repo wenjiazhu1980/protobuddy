@@ -65,6 +65,23 @@ const buildBatches = (annotations, maxPerBatch) => {
   return batches;
 };
 
+// When a request is highly specific (few annotations, single target page),
+// don't flood the model with unrelated files. Focused mode caps the file list
+// to the target page + a few same-directory siblings + generator scripts.
+// This directly improves old_code precision by reducing noise.
+const FOCUSED_MAX_FILES = 6;
+const FOCUSED_ANNOTATION_THRESHOLD = 3;
+const selectFilesForAnnotations = (fileRecords, targetPages, tier, annotationCount) => {
+  const uniquePages = [...new Set(targetPages)];
+  const focused = annotationCount <= FOCUSED_ANNOTATION_THRESHOLD && uniquePages.length === 1;
+  const fileCap = focused
+    ? Math.min(CONTEXT_LIMITS[tier].maxFiles, FOCUSED_MAX_FILES)
+    : CONTEXT_LIMITS[tier].maxFiles;
+  const rank = makeRank(targetPages);
+  const selected = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, fileCap);
+  return { selected, focused, fileCap };
+};
+
 // Coarse whole-prompt char estimate used ONLY to decide whether to batch:
 // annotation text + sum of the file payloads that would be packed.
 const estimatePromptChars = (anns, files) => {
@@ -172,9 +189,8 @@ router.post('/:id/plan', async (req, res) => {
   const fileRecords = await query('files', f => String(f.project_id) === String(req.params.id));
   const targetPages = [...new Set(annotations.map(a => a.page).filter(Boolean))];
   const tier = isReasoningModelId(project.makers_model || '') ? 'reasoning' : 'standard';
-  const fileCap = CONTEXT_LIMITS[tier].maxFiles;
-  const rank = makeRank(targetPages);
-  const selectedFiles = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, fileCap);
+  const { selected: selectedFiles, focused, fileCap } = selectFilesForAnnotations(fileRecords, targetPages, tier, annotations.length);
+  console.log(`[plans] File selection: ${focused ? 'focused' : 'full'} mode, cap=${fileCap}, selected=${selectedFiles.length}`);
   const filesWithContent = [];
   for (const f of selectedFiles) {
     const content = await readFileContent(req.params.id, f.path);
@@ -346,8 +362,8 @@ router.post('/:id/plan', async (req, res) => {
       const batchAnn = batches[i];
       // Pick the files relevant to THIS batch only.
       const bTargetPages = [...new Set(batchAnn.map(a => a.page).filter(Boolean))];
-      const bRank = makeRank(bTargetPages);
-      const bCandidates = [...fileRecords].sort((a, b) => bRank(a) - bRank(b)).slice(0, fileCap);
+      const { selected: bCandidates, focused: bFocused, fileCap: bFileCap } = selectFilesForAnnotations(fileRecords, bTargetPages, tier, batchAnn.length);
+      console.log(`[plans] Batch ${i + 1}/${batches.length}: ${batchAnn.length} annotation(s), file selection=${bFocused ? 'focused' : 'full'}, cap=${bFileCap}`);
       const bFiles = [];
       for (const f of bCandidates) {
         const c = await getContent(f.path);

@@ -254,6 +254,7 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
   ]
 }
 Rules:
+- CONTEXT SCOPE rule: 严格限制上下文范围，仅包含本次实际需要修改的文件，剔除所有无关的上下文信息。例如，如果本次修改仅涉及商家控制台页面，则只需关注与该商家控制台页面相关的文件、代码段和配置，避免被其他模块、页面或系统的无关内容分散注意力。请确保修改建议精简、聚焦，快速定位到目标文件并进行精准修改，同时保持修改过程的清晰性和高效性。如果提供的文件列表中包含与批注无关的文件，直接忽略它们，不要把无关文件的内容纳入 reasoning。
 - file_path must be copied VERBATIM from the "--- File: <path>" headers of the project files list in the user message. Keep the exact subdirectory prefix as shown there.
 - Paths that appear inside agents.md / project rules may come from ANOTHER machine's local folder layout (e.g. "原型设计/phase-2/..." while storage has "phase-2/..."). NEVER use paths from the rules text as file_path — always use the storage-relative path from the files list.
 - old_code must be a substring that actually exists in the current file, so it can be replaced.
