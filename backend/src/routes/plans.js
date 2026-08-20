@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getById, query, insert, update } from '../db.js';
-import { generatePlanWithMakers, generateRuleBasedPlan } from '../services/makersModels.js';
+import { generatePlanWithMakers, generateRuleBasedPlan, isReasoningModelId, CONTEXT_LIMITS } from '../services/makersModels.js';
 import { checkConsistency, buildConsistencyFeedback } from '../services/consistency.js';
 import { readFileContent, writeFileContent, findEntryPoint } from '../services/fileStorage.js';
 import { deployToEdgeOne } from '../services/edgeone.js';
@@ -98,10 +98,11 @@ router.post('/:id/plan', async (req, res) => {
 
   // Get current files with content.
   // IMPORTANT: only read files relevant to the annotations first (ranked by the
-  // page they target), then top up with other files up to a cap of 10. Reading
-  // ALL files (some >700KB) serially from blob can push the request past the
-  // 120s Cloud Functions limit once combined with a slow reasoning model
-  // (e.g. @makers/kimi-k2.6 takes 30-60s to think).
+  // page they target), then top up with other files up to a model-tier-dependent
+  // cap (see CONTEXT_LIMITS in makersModels.js). Reading ALL files (some >700KB)
+  // serially from blob can push the request past the 120s Cloud Functions limit
+  // once combined with a slow reasoning model (e.g. @makers/kimi-k2.6 takes
+  // 30-60s to think).
   const fileRecords = await query('files', f => String(f.project_id) === String(req.params.id));
   const targetPages = [...new Set(annotations.map(a => a.page).filter(Boolean))];
   const rank = f => {
@@ -112,7 +113,9 @@ router.post('/:id/plan', async (req, res) => {
     // so it must reliably make it into the model's context.
     return /\.py$/i.test(f.path) ? 500 : 999;
   };
-  const selectedFiles = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, 10);
+  const tier = isReasoningModelId(project.makers_model || '') ? 'reasoning' : 'standard';
+  const fileCap = CONTEXT_LIMITS[tier].maxFiles;
+  const selectedFiles = [...fileRecords].sort((a, b) => rank(a) - rank(b)).slice(0, fileCap);
   const filesWithContent = [];
   for (const f of selectedFiles) {
     const content = await readFileContent(req.params.id, f.path);
@@ -430,6 +433,7 @@ router.post('/:id/plan', async (req, res) => {
     method: result.method,
     model: result.model || '',
     fallback_reason: result.fallbackReason || '',
+    context_meta: result.contextMeta || null,
     precheck,
     consistency,
     scorecard

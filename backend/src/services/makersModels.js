@@ -24,6 +24,64 @@ const MAKERS_MODELS_ENDPOINT = 'https://ai-gateway.edgeone.link/v1/chat/completi
 // different model id — the user must bind the vendor API key in the Makers console.
 const DEFAULT_MODEL = '@makers/hy3';
 
+// ---- Context & token budget configuration ---------------------------------
+// Centralized, env-overridable limits for the agent's input context window
+// and output token ceiling. Larger windows let the model receive longer user
+// input / system instructions and emit complete answers instead of being cut
+// off mid-JSON. They trade off against the 120s Cloud Function hard timeout
+// (reasoning models process input tokens slowly), so the reasoning tier stays
+// tighter than the standard tier. Tune without code changes via env vars:
+//   MAKERS_CTX_FILE_CHARS(_REASONING)      per-file char cap
+//   MAKERS_CTX_MAX_FILES(_REASONING)       max files packed into the prompt
+//   MAKERS_MAX_OUTPUT_TOKENS(_REASONING)   output token ceiling
+//   MAKERS_INPUT_CHAR_BUDGET(_REASONING)   whole-prompt packing budget
+const envInt = (v, d) => {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n > 0 ? n : d;
+};
+
+export const CONTEXT_LIMITS = {
+  reasoning: {
+    maxFileChars: envInt(process.env.MAKERS_CTX_FILE_CHARS_REASONING, 20000),
+    maxFiles: envInt(process.env.MAKERS_CTX_MAX_FILES_REASONING, 8),
+    headLen: 1600, excerptBefore: 500, excerptAfter: 2800, maxExcerpts: 6, smallFileThreshold: 8000,
+  },
+  standard: {
+    maxFileChars: envInt(process.env.MAKERS_CTX_FILE_CHARS, 50000),
+    maxFiles: envInt(process.env.MAKERS_CTX_MAX_FILES, 14),
+    headLen: 3000, excerptBefore: 1000, excerptAfter: 4000, maxExcerpts: 10, smallFileThreshold: 24000,
+  },
+};
+
+// Output token ceiling: reasoning models spend part of the budget on
+// reasoning_content before the final JSON, so they get a larger ceiling to
+// keep the visible answer complete.
+export const OUTPUT_TOKEN_LIMITS = {
+  reasoning: envInt(process.env.MAKERS_MAX_OUTPUT_TOKENS_REASONING, 16000),
+  standard: envInt(process.env.MAKERS_MAX_OUTPUT_TOKENS, 8000),
+};
+
+// Packing budget (chars) for the whole prompt. Model-side context windows are
+// far larger (64k–128k tokens); this budget exists to keep generation inside
+// the 120s function timeout. Crossing INPUT_WARN_RATIO triggers a recorded
+// warning (surfaced in the UI) instead of a silent cut.
+const INPUT_CHAR_BUDGET = {
+  reasoning: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET_REASONING, 110000),
+  standard: envInt(process.env.MAKERS_INPUT_CHAR_BUDGET, 190000),
+};
+const INPUT_WARN_RATIO = 0.85;
+
+// Rough token estimate: CJK chars ≈ 1 token each, other chars ≈ 4 per token.
+export const estimateTokens = (s) => {
+  const str = String(s || '');
+  const cjk = (str.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) || []).length;
+  return Math.round(cjk + (str.length - cjk) / 4);
+};
+
+export function isReasoningModelId(model) {
+  return /kimi-k2|deepseek-v4|minimax/i.test(model || '');
+}
+
 /**
  * Call Makers Models to generate a structured modification plan based on annotations.
  *
@@ -85,10 +143,28 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
     // Non-reasoning models (deepseek-chat, @makers/hy3) are 3-5x faster, so we
     // give them MUCH more context (30k chars, 10 files, wider excerpts) — this
     // directly improves old_code precision and reduces dry-run match failures.
-    const isReasoningModel = /kimi-k2|deepseek-v4|minimax/i.test(model || '');
-    const CTX = isReasoningModel
-      ? { maxFileChars: 12000, maxFiles: 6, headLen: 1200, excerptBefore: 400, excerptAfter: 2000, maxExcerpts: 5, smallFileThreshold: 6000 }
-      : { maxFileChars: 30000, maxFiles: 10, headLen: 2000, excerptBefore: 800, excerptAfter: 3000, maxExcerpts: 8, smallFileThreshold: 16000 };
+    const isReasoningModel = isReasoningModelId(model);
+    const CTX = isReasoningModel ? CONTEXT_LIMITS.reasoning : CONTEXT_LIMITS.standard;
+    const charBudget = isReasoningModel ? INPUT_CHAR_BUDGET.reasoning : INPUT_CHAR_BUDGET.standard;
+    const maxTokens = isReasoningModel ? OUTPUT_TOKEN_LIMITS.reasoning : OUTPUT_TOKEN_LIMITS.standard;
+
+    // Context metadata: recorded on the plan so the UI can show how much of
+    // the input window was used and warn (instead of silently truncating).
+    const contextMeta = {
+      model, reasoning: isReasoningModel,
+      files_considered: files.length,
+      files_included: 0,
+      files_omitted: [],
+      files_truncated: [],
+      prompt_chars: 0,
+      est_input_tokens: 0,
+      input_char_budget: charBudget,
+      max_output_tokens: maxTokens,
+      finish_reason: '',
+      completion_tokens: null,
+      output_truncated: false,
+      warnings: [],
+    };
     const pageHints = [...new Set(
       annotations
         .map(a => (a.page || '').split('/').pop())
@@ -117,11 +193,18 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
         }
         if (used > CTX.maxExcerpts) break;
       }
+      contextMeta.files_truncated.push(f.path);
       return `(LARGE FILE — showing head + excerpts around the annotated page / entrypoint; offsets are approximate)\n${ctx}\n[END OF ${f.path} EXCERPTS]`;
     };
-    const filesText = files.slice(0, CTX.maxFiles).map(f => {
-      return `--- File: ${f.path} ---\n${buildFileContext(f)}`;
-    }).join('\n\n');
+    let fileEntries = files.slice(0, CTX.maxFiles).map(f => ({
+      path: f.path,
+      text: buildFileContext(f),
+    }));
+    contextMeta.files_included = fileEntries.length;
+    contextMeta.files_omitted = files.slice(CTX.maxFiles).map(f => f.path);
+    const buildFilesText = () => fileEntries
+      .map(e => `--- File: ${e.path} ---\n${e.text}`)
+      .join('\n\n');
 
     // Optional project rules from the prototype's agents.md (injected into the system prompt)
     // NOTE: rules may embed the author's LOCAL machine paths (e.g. "原型设计/phase-2/x.py")
@@ -176,7 +259,7 @@ For each error, re-read the provided file excerpts, copy old_code character-for-
 ${retryFeedback}`
       : '';
 
-    const userPrompt = `## Annotations:
+    const buildUserPrompt = (filesText) => `## Annotations:
 ${annotationsText}
 
 ## Current Files:
@@ -184,25 +267,45 @@ ${filesText}${feedbackBlock}
 
 Generate a modification plan in JSON format.`;
 
+    // ---- Input budget guard -------------------------------------------------
+    // Measure the assembled prompt. If it exceeds the packing budget, drop the
+    // LEAST relevant files (the caller ranks files most→least relevant) until
+    // it fits, recording exactly what was omitted. Crossing the warn ratio
+    // records a warning instead of silently degrading context quality.
+    let userPrompt = buildUserPrompt(buildFilesText());
+    while (fileEntries.length > 1 && (systemPrompt.length + userPrompt.length) > charBudget) {
+      const dropped = fileEntries.pop();
+      contextMeta.files_included = fileEntries.length;
+      contextMeta.files_omitted.push(`${dropped.path}（超出输入预算被省略）`);
+      userPrompt = buildUserPrompt(buildFilesText());
+    }
+    contextMeta.prompt_chars = systemPrompt.length + userPrompt.length;
+    contextMeta.est_input_tokens = estimateTokens(systemPrompt + userPrompt);
+    console.log(`[makersModels] Prompt size: ${contextMeta.prompt_chars} chars (~${contextMeta.est_input_tokens} tokens), budget ${charBudget}, files ${contextMeta.files_included}/${contextMeta.files_considered}`);
+    if (contextMeta.prompt_chars > charBudget * INPUT_WARN_RATIO) {
+      const omittedNote = contextMeta.files_omitted.length
+        ? `已省略文件：${contextMeta.files_omitted.join('、')}。`
+        : '';
+      contextMeta.warnings.push(`输入上下文接近上限：当前约 ${contextMeta.est_input_tokens} tokens（${contextMeta.prompt_chars} 字符 / 预算 ${charBudget}）。${omittedNote}建议减少批注数量或分批生成，避免模型遗漏细节。`);
+    }
+    if (contextMeta.files_truncated.length > 0) {
+      contextMeta.warnings.push(`${contextMeta.files_truncated.length} 个大文件仅包含头部+关键摘录（非全文）：${contextMeta.files_truncated.join('、')}。涉及这些文件的修改建议请重点核对 old_code 精确性。`);
+    }
+
     console.log(`[makersModels] Calling Makers Models API (model=${model}, reasoning=${isReasoningModel})...`);
 
     // isReasoningModel was determined above (before file context building) so
     // we could use model-dependent context limits. Same variable reused here.
-    // Reasoning models: omit temperature (API rejects it), more max_tokens,
-    // longer timeout. Non-reasoning: temperature=0.3, fewer tokens, shorter timeout.
+    // Output ceiling comes from OUTPUT_TOKEN_LIMITS (env-overridable) — the
+    // raised ceilings keep long answers complete instead of being cut off
+    // mid-JSON (reasoning models spend part of the budget on reasoning_content).
     const payload = {
       model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      // Reasoning models spend tokens on `reasoning_content` first; give them
-      // more room so the final JSON content is not truncated.
-      // Reasoning models spend tokens on `reasoning_content` first; the JSON
-      // output shares the same max_tokens budget. If reasoning consumes most
-      // of it, the JSON content gets truncated → parse failure → empty changes.
-      // 8000 gives enough room for reasoning + structured JSON output.
-      max_tokens: isReasoningModel ? 8000 : 4000,
+      max_tokens: maxTokens,
       response_format: { type: 'json_object' }
     };
     if (!isReasoningModel) {
@@ -251,6 +354,8 @@ Generate a modification plan in JSON format.`;
     const finishReason = data.choices?.[0]?.finish_reason || '';
     const reasoningContent = data.choices?.[0]?.message?.reasoning_content || '';
     const usage = data.usage;
+    contextMeta.finish_reason = finishReason;
+    contextMeta.completion_tokens = usage?.completion_tokens ?? null;
 
     // Empty content → reasoning likely consumed the entire max_tokens budget.
     // Throw so the catch block generates a rule-based fallback.
@@ -274,10 +379,35 @@ Generate a modification plan in JSON format.`;
       const jsonMatch = clean.match(/\{[\s\S]*\}/);
       planData = JSON.parse(jsonMatch ? jsonMatch[0] : clean);
     } catch (parseErr) {
-      // DO NOT swallow as empty plan — throw so catch block generates
-      // rule-based fallback with a useful reason.
-      console.warn(`[makersModels] Failed to parse JSON (finish_reason=${finishReason}). Content preview: ${content.slice(0, 300)}`);
-      throw new Error(`模型返回内容无法解析为 JSON（finish_reason=${finishReason}，内容前 300 字符: ${content.slice(0, 300)}）。`);
+      // Truncation-aware recovery: when the model hit the output token limit
+      // mid-JSON (finish_reason === 'length'), salvage the COMPLETE change
+      // objects emitted before the cut instead of discarding the whole
+      // response. The salvaged plan is flagged output_truncated so the UI
+      // warns the reviewer instead of presenting it as a full answer.
+      const salvaged = finishReason === 'length' ? repairTruncatedPlanJson(content) : null;
+      if (salvaged && Array.isArray(salvaged.changes) && salvaged.changes.length > 0) {
+        planData = salvaged;
+        contextMeta.output_truncated = true;
+        contextMeta.warnings.push(
+          `模型输出在 ${usage?.completion_tokens ?? '?'} tokens 处被截断（已达输出上限 ${maxTokens}）。` +
+          `已抢救出截断前完整的 ${salvaged.changes.length} 条修改建议，但方案可能不完整——建议核对后对剩余批注分批重新生成。`
+        );
+        console.warn(`[makersModels] Output truncated at ${usage?.completion_tokens}/${maxTokens} tokens; salvaged ${salvaged.changes.length} complete change(s)`);
+      } else {
+        // DO NOT swallow as empty plan — throw so catch block generates
+        // rule-based fallback with a useful reason.
+        console.warn(`[makersModels] Failed to parse JSON (finish_reason=${finishReason}). Content preview: ${content.slice(0, 300)}`);
+        throw new Error(`模型返回内容无法解析为 JSON（finish_reason=${finishReason}，内容前 300 字符: ${content.slice(0, 300)}）。`);
+      }
+    }
+
+    // Near-limit warning: output completed but consumed most of the token
+    // ceiling — the NEXT, slightly larger request would truncate.
+    if (!contextMeta.output_truncated && usage?.completion_tokens
+        && usage.completion_tokens >= 0.85 * maxTokens) {
+      contextMeta.warnings.push(
+        `模型输出已使用 ${usage.completion_tokens}/${maxTokens} tokens（接近输出上限）。本次结果完整，但更复杂的任务建议分批生成以避免截断。`
+      );
     }
 
     // Normalize changes
@@ -297,7 +427,8 @@ Generate a modification plan in JSON format.`;
       },
       model,
       usage,
-      method: 'makers'
+      method: 'makers',
+      contextMeta
     };
   } catch (err) {
     console.warn(`[makersModels] API call failed: ${err.message}. Using rule-based fallback.`);
@@ -306,6 +437,36 @@ Generate a modification plan in JSON format.`;
     fallback.method = 'rule-based';
     return fallback;
   }
+}
+
+/**
+ * Salvage complete top-level change objects from a TRUNCATED JSON plan
+ * (finish_reason === 'length'). The model ran out of output tokens mid-JSON;
+ * instead of discarding the whole response we close the JSON at the last
+ * complete object boundary and keep whatever was fully emitted.
+ * Strategy: walk backwards over candidate "}," boundaries and try to close the
+ * JSON with "]}"; the first candidate that parses to an object with a changes
+ * array wins. Boundaries that fall inside string literals simply fail to parse
+ * and are skipped.
+ * @returns {{summary?: string, changes: array}|null}
+ */
+export function repairTruncatedPlanJson(raw) {
+  const clean = String(raw || '')
+    .replace(/<think[\s\S]*?<\/think>/gi, '')
+    .replace(/<reasoning[\s\S]*?<\/reasoning>/gi, '')
+    .replace(/```(?:json)?\s*/gi, '')
+    .replace(/```/g, '');
+  let pos = clean.lastIndexOf('},');
+  let attempts = 0;
+  while (pos !== -1 && attempts < 30) {
+    attempts++;
+    try {
+      const parsed = JSON.parse(clean.slice(0, pos + 1) + ']}');
+      if (Array.isArray(parsed.changes)) return parsed;
+    } catch { /* boundary inside a string / mid-value — try an earlier one */ }
+    pos = clean.lastIndexOf('},', pos - 1);
+  }
+  return null;
 }
 
 /**

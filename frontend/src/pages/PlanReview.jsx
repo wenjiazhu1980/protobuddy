@@ -370,6 +370,31 @@ export default function PlanReview() {
                   <strong>⚠ 本次使用了规则引擎兜底：</strong> {selectedPlan.fallback_reason}
                 </div>
               )}
+              {/* 上下文用量概览 + 截断预警：后端在生成时记录 context_meta，
+                  输入接近预算 / 输出被截断时给出预警而非静默降级 */}
+              {selectedPlan.context_meta && (() => {
+                const cm = selectedPlan.context_meta;
+                const hasWarnings = (cm.warnings || []).length > 0;
+                const truncated = !!cm.output_truncated;
+                return (
+                  <div style={{
+                    marginBottom: 12, padding: 10, borderRadius: 6, fontSize: 12,
+                    background: truncated ? '#fef2f2' : hasWarnings ? '#fffbeb' : '#f8fafc',
+                    border: `1px solid ${truncated ? '#fca5a5' : hasWarnings ? '#fcd34d' : '#e2e8f0'}`,
+                    color: truncated ? '#7f1d1d' : hasWarnings ? '#78350f' : 'var(--text-muted)'
+                  }}>
+                    <strong>
+                      {truncated ? '✕ 模型输出被截断：' : hasWarnings ? '⚠ 上下文预警：' : '✓ 上下文用量：'}
+                    </strong>
+                    {' '}输入约 {cm.est_input_tokens ?? '—'} tokens（{cm.files_included ?? '—'}/{cm.files_considered ?? '—'} 个文件）
+                    {cm.files_truncated?.length > 0 && `，${cm.files_truncated.length} 个大文件仅摘录`}
+                    {' · '}输出 {cm.completion_tokens ?? '—'}/{cm.max_output_tokens ?? '—'} tokens
+                    {(cm.warnings || []).map((w, i) => (
+                      <div key={i} style={{ marginTop: 6, paddingLeft: 8, borderLeft: '2px solid currentColor' }}>{w}</div>
+                    ))}
+                  </div>
+                );
+              })()}
               {selectedPlan.precheck && !selectedPlan.precheck.passed && (
                 <div style={{ marginBottom: 12, padding: 10, background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6, fontSize: 12, color: '#7f1d1d' }}>
                   <strong>✕ 预检未通过：</strong> {selectedPlan.precheck.error_count} 条修改建议的 old_code 无法在目标文件中唯一匹配（应用时会失败）。

@@ -1,51 +1,47 @@
-# 任务概览：批注栏底部固定 + 筛选感知导出
+# 任务概览：Agent 输入/输出上下文限制提升 + 截断预警机制
 
-**提交**: `6477048` (main) · 3 个文件 · +257/-24 行 · 2026-08-20 · 已部署 protobuddy.20140107.xyz（deployment dpwfgre0mx0m）
+**提交**: main · 3 个文件改动 · 2026-08-20 · 已部署 protobuddy.20140107.xyz（deployment dpoe58322lll）
 
 ## 功能说明
 
-优化评审页右侧批注栏的布局与导出能力，解决底部操作按钮被挤出可视区、以及无法按当前视图导出批注的问题。
+提升 Agent（Makers Models 方案生成链路）的上下文容量，并在接近长度上限时给出可视化预警，取代原有的静默截断。
 
-### 1. 底部固定与高度约束
+### 1. 输入上下文窗口扩容（集中化、env 可覆盖）
 
-- **外层布局**：`Review` 页的 `main-content` 改为 `display: flex; flex-direction: column; height: 100%`，顶部标题行自然占用高度，`.review-layout` 通过 `flex: 1; min-height: 0` 填满剩余视口空间，不再依赖 `calc(100vh - ...)` 硬编码。
-- **面板布局**：`.annotation-panel` 改为 `display: flex; flex-direction: column; overflow: hidden; min-height: 0`。
-- **滚动容器**：新增 `.annotation-list`，负责 `flex: 1; overflow-y: auto; min-height: 0`，只有批注列表本身滚动；标题栏、筛选器、排序器、底部操作栏均不滚动。
-- **底部操作栏**：新增 `.annotation-panel-footer`，`flex-shrink: 0`，始终固定在面板底部，包含「生成修改方案」与「导出」两组操作。
+- 新增集中配置 `CONTEXT_LIMITS`（makersModels.js 顶部），取代散落的内联限制：
+  - 推理模型（deepseek-v4 / kimi-k2 / minimax）：单文件 12k→**20k 字符**，文件数 6→**8**
+  - 非推理模型（deepseek-chat / @makers/hy3）：单文件 30k→**50k 字符**，文件数 10→**14**
+- `plans.js` 文件选取上限同步改为模型分层（`CONTEXT_LIMITS[tier].maxFiles`，按 `project.makers_model` 判定层级）。
+- 全部参数支持环境变量覆盖，无需改代码即可调参：
+  `MAKERS_CTX_FILE_CHARS(_REASONING)`、`MAKERS_CTX_MAX_FILES(_REASONING)`、`MAKERS_MAX_OUTPUT_TOKENS(_REASONING)`、`MAKERS_INPUT_CHAR_BUDGET(_REASONING)`。
 
-### 2. 排序状态
+### 2. 输出 token 上限提升
 
-新增排序选择器（位于筛选器下方）：
+- 推理模型 `max_tokens` 8000→**16000**（reasoning_content 与 content 共享预算，给足空间避免 JSON 被切断）；非推理模型 4000→**8000**。
 
-| 排序项 | 行为 |
-|---|---|
-| 默认顺序 | 保持后端返回顺序 |
-| 时间倒序 | 按 `created_at` 从新到旧 |
-| 时间正序 | 按 `created_at` 从旧到新 |
-| 状态排序 | 待处理 → 已解决 → 不采纳，同状态下时间倒序 |
+### 3. 截断预警机制（而非直接截断）
 
-### 3. 筛选感知的导出
-
-- **导出入口**：底部操作栏内的格式下拉 +「导出」按钮。
-- **格式支持**：
-  - **JSON**：`application/json;charset=utf-8`，无 BOM， pretty-print（2 空格）。导出的 JSON 包含 `exportedAt`、`filter`、`sort`、`total` 元信息及 `annotations` 数组，数组字段为 `id/content/status/author/page/x/y/created_at/element_info`。
-  - **CSV**：`text/csv;charset=utf-8`，带 UTF-8 BOM（`\uFEFF`），便于 Windows Excel 正确识别中文；字段包含逗号/引号/换行时按 RFC 4180 转义；`element_info` 用 `JSON.stringify` 整段写入。
-- **数据范围**：严格使用当前经过筛选 **和** 排序后的 `filtered` 数组，不会导出全部批注。文件名包含项目名、筛选标签、排序标签和时间戳，例如 `批注_优美丝路_待处理_时间倒序_20260820_094556.json`。
+- **输入侧**：组装完 prompt 后实测字符数与估测 token 数（CJK≈1 token、其他≈4 字符/token）；超过打包预算（推理 110k / 非推理 190k 字符）时按相关性**从尾部丢弃文件**并记录 `files_omitted` 明细；超过预算 85% 记录预警；大文件仅含摘录的记录 `files_truncated`。
+- **输出侧**：
+  - `finish_reason=length` 且 JSON 解析失败时，`repairTruncatedPlanJson` 从最后一个完整 `},` 对象边界向后尝试闭合 JSON，**抢救截断前已完整输出的修改建议**（而非整体丢弃走兜底），标记 `output_truncated=true` 并预警"方案可能不完整"；
+  - 输出用量 ≥ 85% 上限时预警"接近输出上限，复杂任务建议分批生成"。
+- **数据链路**：`contextMeta`（文件数/省略与截断明细/prompt 字符/估测 token/finish_reason/completion_tokens/warnings）随生成结果持久化到 `plan.context_meta`。
+- **前端**（PlanReview.jsx）：方案摘要下方新增横幅——正常时灰色显示上下文用量概览（输入~tokens、文件数、输出 tokens），有预警时黄色逐条列出，输出被截断时红色高亮提示核对。
 
 ## 验证情况
 
-- `npm run build` 通过，产物 `dist/assets/index-CJXdV5AY.js` 包含新代码。
-- 本地静态预览（`python3 -m http.server 5175`）页面与 JS 资源 200 正常。
-- `git push` 因 HTTP 代理 502 失败一次，随后使用 `git -c http.proxy= -c https.proxy= push` 成功。
-- EdgeOne 部署成功：`dpwfgre0mx0m`；自定义域名 `protobuddy.20140107.xyz` 返回 200，线上 JS bundle 确认包含 `annotation-panel-footer`、`annotation-export`、`批注_` 等标记。
+- 单测：截断 JSON（3 条 change 切尾）抢救出 2 条完整对象（含字符串内花括号边界跳过）；垃圾输入返回 null；token 估算与模型分层判定正确。
+- E2E（本地项目 1，deepseek-chat）：生成 plan #10078，`method=makers`，`context_meta` 完整落库（est 2530 tokens / budget 190k / max_output_tokens 8000 / finish_reason=stop / changes=1）。
+- 预警路径：`MAKERS_INPUT_CHAR_BUDGET=5000` 强制触发，正确输出"输入上下文接近上限"预警文案。
+- `vite build` 通过（bundle `assets/index-dnvvJuup.js`）；线上部署 `dpoe58322lll`，protobuddy.20140107.xyz 返回 200。
 
 ## 文件变更
 
-- `frontend/src/components/AnnotationLayer.jsx`：新增排序状态、导出逻辑、固定底部操作栏，使用 `useMemo` 计算筛选+排序结果。
-- `frontend/src/pages/Review.jsx`：传递 `projectName`；为外层容器与 `.review-layout` 设置 flex 列布局。
-- `frontend/src/styles.css`：新增/调整 `.annotation-list`、`.annotation-panel-footer`、`.annotation-sort`、`.annotation-export`、`.review-layout` 等样式。
+- `backend/src/services/makersModels.js`：新增 CONTEXT_LIMITS / OUTPUT_TOKEN_LIMITS / INPUT_CHAR_BUDGET 集中配置与 estimateTokens / isReasoningModelId / repairTruncatedPlanJson 导出；文件上下文构建记录 meta；输入预算守卫；max_tokens 分层提升；输出截断检测与抢救；返回 contextMeta。
+- `backend/src/routes/plans.js`：导入集中配置，文件选取上限按模型分层；plan 记录持久化 `context_meta`。
+- `frontend/src/pages/PlanReview.jsx`：新增 context_meta 概览/预警横幅。
 
 ## 后续事项
 
-1. 当前导出由前端在浏览器中完成，适合批注量 < 10k 的场景；若后续需要服务端导出（如一次性导出全项目历史），可复用同样的筛选/排序逻辑在后端实现。
-2. 本地 3001 后端仍在运行。
+1. 120s Cloud Function 硬超时仍是推理模型输入窗口的天花板——默认值已按此权衡，如需更大窗口请用 env 变量按项目调整并观察生成耗时。
+2. 本地 3001 后端运行中（正常配置）。
