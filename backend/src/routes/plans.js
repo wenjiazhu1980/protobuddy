@@ -275,14 +275,19 @@ router.post('/:id/plan', async (req, res) => {
           v.status = 'error';
           v.message = `目标是二进制文件，无法应用文本修改: ${change.file_path}`;
         } else if (change.old_code && change.new_code) {
-          const n = content.data.split(change.old_code).length - 1;
-          v.match_count = n;
-          if (n === 0) {
+          if (change.old_code === change.new_code) {
             v.status = 'error';
-            v.message = 'old_code 未在文件中找到（代码可能为模型凭空构造）';
-          } else if (n > 1) {
-            v.status = 'error';
-            v.message = `old_code 在文件中匹配 ${n} 次，无法安全应用（需扩大上下文至唯一匹配）`;
+            v.message = '修改建议未产生实际变更（old_code 与 new_code 完全相同）。目标可能已达成，请重新描述需求或关闭对应批注';
+          } else {
+            const n = content.data.split(change.old_code).length - 1;
+            v.match_count = n;
+            if (n === 0) {
+              v.status = 'error';
+              v.message = 'old_code 未在文件中找到（代码可能为模型凭空构造）';
+            } else if (n > 1) {
+              v.status = 'error';
+              v.message = `old_code 在文件中匹配 ${n} 次，无法安全应用（需扩大上下文至唯一匹配）`;
+            }
           }
         } else if (change.new_code) {
           v.status = 'warn';
@@ -795,6 +800,15 @@ router.post('/plans/:planId/apply', requireOwnerAuth, async (req, res) => {
       // Apply the change: replace old_code with new_code. We require old_code
       // to exist and be unique in the file so we never change the wrong place.
       if (change.old_code && change.new_code) {
+        // Empty-change guard: identical old_code/new_code is a no-op. Applying
+        // it would "succeed" (string.replace changes nothing) and silently
+        // resolve annotations as done while the file never changed — exactly
+        // what happened with plan #627. Reject instead with a clear hint.
+        if (change.old_code === change.new_code) {
+          errors.push(`修改建议未产生实际变更（old_code 与 new_code 完全相同）: ${change.file_path}。目标可能已达成，建议驳回该条建议并关闭对应批注，或创建更明确的批注重新描述需求。`);
+          failedChanges.push(change);
+          continue;
+        }
         if (!content.includes(change.old_code)) {
           errors.push(`old_code 未在 ${change.file_path} 中找到，未做任何修改。生成的修改可能不精确，请驳回该条建议并创建更精确的批注。`);
           failedChanges.push(change);
