@@ -25,6 +25,18 @@ function computeSortOrder(columnTasks, dropIndex, draggedTaskId) {
   return (siblings[dropIndex - 1].sort_order + siblings[dropIndex].sort_order) / 2;
 }
 
+/** Relative time label for annotation sync markers (e.g. 刚刚 / 5 分钟前 / 3 天前). */
+function syncTimeLabel(iso) {
+  const t = new Date(iso).getTime();
+  if (!t || Number.isNaN(t)) return '';
+  const diff = Date.now() - t;
+  if (diff < 60 * 1000) return '刚刚';
+  if (diff < 60 * 60 * 1000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 24 * 60 * 60 * 1000) return `${Math.floor(diff / 3600000)} 小时前`;
+  if (diff < 7 * 24 * 60 * 60 * 1000) return `${Math.floor(diff / 86400000)} 天前`;
+  return new Date(t).toLocaleDateString('zh-CN');
+}
+
 export default function Tasks() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -593,7 +605,7 @@ export default function Tasks() {
                   <div
                     key={t.id}
                     data-task-id={t.id}
-                    className={`task-card ${selected.has(t.id) ? 'task-card-selected' : ''} ${dragTaskId === t.id ? 'task-card-dragging' : ''}`}
+                    className={`task-card ${selected.has(t.id) ? 'task-card-selected' : ''} ${dragTaskId === t.id ? 'task-card-dragging' : ''} ${t.annotation_sync ? 'task-card-synced' : ''}`}
                     onPointerDown={(e) => handlePointerDown(e, t)}
                     role="button"
                     tabIndex={0}
@@ -611,6 +623,14 @@ export default function Tasks() {
                       {t.source === 'auto' && <span className="badge badge-blue">自动</span>}
                       {t.source === 'manual' && <span className="badge badge-gray">手动</span>}
                       {t.gitlab?.url && <span className="badge badge-green">GitLab #{t.gitlab.iid}</span>}
+                      {t.annotation_sync && (
+                        <span
+                          className="badge badge-orange task-sync-badge"
+                          title={`批注同步更新于 ${new Date(t.annotation_sync.at).toLocaleString('zh-CN')}${t.annotation_sync.detail ? '：' + t.annotation_sync.detail : ''}`}
+                        >
+                          批注同步 · {syncTimeLabel(t.annotation_sync.at)}
+                        </span>
+                      )}
                       <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-muted)' }}>{t.estimate_hours}h</span>
                       <button
                         className="task-card-menu"

@@ -17,6 +17,7 @@ export default function Review() {
   const [latestPlan, setLatestPlan] = useState(null);
   const [currentPage, setCurrentPage] = useState('index.html');
   const [toast, setToast] = useState(null);
+  const [taskCount, setTaskCount] = useState(null);
   const [panelOpen, setPanelOpen] = useState(() => {
     try { return localStorage.getItem('protobuddy.review.panel.open') !== 'false'; } catch { return true; }
   });
@@ -46,6 +47,13 @@ export default function Review() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Task count badge for the tasks entry (never blocks the review page)
+  useEffect(() => {
+    api.listTasks(id)
+      .then(ts => setTaskCount(ts.length))
+      .catch(() => {});
+  }, [id]);
 
   const handleAnnotate = async ({ x, y, content, page, element_info }) => {
     try {
@@ -146,6 +154,13 @@ export default function Review() {
             {annotateMode ? '● 点击预览区添加批注（再次点击退出）' : '+ 添加批注'}
           </button>
           <button className="btn btn-secondary" onClick={() => navigate(`/project/${id}/plan`)}>查看方案</button>
+          <button
+            className="btn btn-secondary"
+            onClick={() => navigate(`/project/${id}/tasks`)}
+            title="查看本项目的开发任务清单（自动拆解 / 批注同步 / GitLab 推送）"
+          >
+            任务清单{taskCount != null ? ` (${taskCount})` : ''}
+          </button>
         </div>
       </div>
 

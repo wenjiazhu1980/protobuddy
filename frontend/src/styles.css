@@ -934,6 +934,14 @@ button {
 .task-card { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: box-shadow .15s, border-color .15s; }
 .task-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
 .task-card-selected { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-light); }
+/* annotation-sync visual marker: orange left border + gentle glow so freshly
+   synced tasks stand out on the board at a glance */
+.task-card-synced { border-left: 3px solid var(--orange, #f59e0b); }
+.task-sync-badge { animation: task-sync-pulse 2s ease-in-out 3; }
+@keyframes task-sync-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
 .task-card-top { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
 .task-card-title { font-size: 13px; font-weight: 600; line-height: 1.4; margin-bottom: 4px; }
 .task-card-module { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }

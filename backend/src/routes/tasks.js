@@ -45,7 +45,8 @@ function cleanTask(t) {
     module_path: t.module_path || [],
     children_ids: t.children_ids || [],
     feature_points: t.feature_points || [],
-    page_feature_count: t.page_feature_count || 0
+    page_feature_count: t.page_feature_count || 0,
+    annotation_sync: t.annotation_sync || null
   };
 }
 
@@ -484,14 +485,18 @@ router.post('/:id/tasks/sync-annotations', async (req, res) => {
     if (!idsChanged && !descChanged) continue;  // [R4] 内容无变动 → 保持原状态，不写库
 
     const patch = { annotation_ids: ids, description: nextDesc };
+    const syncDetail = [
+      idsChanged ? `关联批注 ${ids.length} 条` : null,
+      descChanged ? '描述批注明细已更新' : null
+    ].filter(Boolean).join('；');
+    // Visual marker consumed by the board UI: when this task was last
+    // touched by an annotation sync and what changed.
+    patch.annotation_sync = { at: new Date().toISOString(), detail: syncDetail };
     changes.push({
       taskId: task.id,
       action: 'content',
       annotation_ids: ids,
-      detail: [
-        idsChanged ? `关联批注 ${ids.length} 条` : null,
-        descChanged ? '描述批注明细已更新' : null
-      ].filter(Boolean).join('；')
+      detail: syncDetail
     });
 
     /* ---- [R2] 回退规则：done + 内容变动 → in_progress ----

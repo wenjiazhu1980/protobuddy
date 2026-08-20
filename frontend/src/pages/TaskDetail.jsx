@@ -175,6 +175,14 @@ export default function TaskDetail() {
               <span className="badge badge-gray">{task.estimate_hours}h</span>
               <span className="badge badge-gray">{new Date(task.created_at).toLocaleString('zh-CN')}</span>
               {task.gitlab?.synced_at && <span className="badge badge-green">GitLab 同步于 {new Date(task.gitlab.synced_at).toLocaleString('zh-CN')}</span>}
+              {task.annotation_sync && (
+                <span
+                  className="badge badge-orange"
+                  title={task.annotation_sync.detail || '批注同步已更新此任务的内容'}
+                >
+                  批注同步更新于 {new Date(task.annotation_sync.at).toLocaleString('zh-CN')}
+                </span>
+              )}
             </div>
           )}
 
