@@ -284,8 +284,8 @@ button {
 /* Review page */
 .review-layout {
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 16px;
+  grid-template-columns: 1fr 300px;
+  gap: 12px;
   min-height: 0;
 }
 
@@ -557,6 +557,8 @@ button {
 
 .review-main {
   height: 100%;
+  max-width: none;
+  padding: 16px;
 }
 
 .annotation-item {

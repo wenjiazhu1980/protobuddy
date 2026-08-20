@@ -168,7 +168,7 @@ export default function Review() {
       <div
         className="review-layout"
         style={{
-          gridTemplateColumns: panelOpen ? '1fr 320px' : '1fr 44px',
+          gridTemplateColumns: panelOpen ? '1fr 300px' : '1fr 44px',
           transition: 'grid-template-columns 0.25s ease',
           flex: 1,
           minHeight: 0
