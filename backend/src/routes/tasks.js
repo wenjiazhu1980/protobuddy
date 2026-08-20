@@ -591,4 +591,47 @@ router.delete('/:id/tasks/:taskId', requireOwnerAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// Batch delete tasks — owner operation
+router.post('/:id/tasks/batch-delete', requireOwnerAuth, async (req, res) => {
+  const ids = Array.isArray(req.body.task_ids) ? req.body.task_ids : [];
+  if (!ids.length) return res.status(400).json({ error: '未选择任务' });
+
+  const all = await getProjectTasks(req.params.id);
+  const idSet = new Set(ids.map(String));
+  const targets = all.filter(t => idSet.has(String(t.id)));
+  let deleted = 0;
+  for (const t of targets) {
+    await remove('tasks', String(t.id));
+    deleted++;
+  }
+  res.json({ success: true, deleted, skipped: ids.length - deleted });
+});
+
+// Batch move tasks to a target status — owner operation
+router.post('/:id/tasks/batch-move', requireOwnerAuth, async (req, res) => {
+  const ids = Array.isArray(req.body.task_ids) ? req.body.task_ids : [];
+  const { status } = req.body;
+  if (!ids.length) return res.status(400).json({ error: '未选择任务' });
+  if (!TASK_STATUSES.includes(status)) return res.status(400).json({ error: '非法状态' });
+
+  const all = await getProjectTasks(req.params.id);
+  const idSet = new Set(ids.map(String));
+  const targets = all.filter(t => idSet.has(String(t.id)));
+  let moved = 0;
+  // Place moved tasks at the end of the target column
+  const targetCol = all.filter(t => t.status === status && !idSet.has(String(t.id)));
+  let baseOrder = targetCol.reduce((mx, t) => Math.max(mx, t.sort_order || 0), 0);
+  for (const t of targets) {
+    if (t.status === status) {
+      // Already in target column — keep position, just ensure it stays
+      moved++;
+      continue;
+    }
+    baseOrder += 1000;
+    await update('tasks', String(t.id), { status, sort_order: baseOrder });
+    moved++;
+  }
+  res.json({ success: true, moved, skipped: ids.length - moved });
+});
+
 export default router;

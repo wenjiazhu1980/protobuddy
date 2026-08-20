@@ -67,6 +67,9 @@ export default function Tasks() {
   const [showExport, setShowExport] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // batch move dropdown
+  const [showBatchMove, setShowBatchMove] = useState(false);
+
   const [gitlabForm, setGitlabForm] = useState({ base_url: '', private_token: '', project_id: '', enabled: false });
   const [testingGitlab, setTestingGitlab] = useState(false);
 
@@ -257,6 +260,41 @@ export default function Tasks() {
     if (next.has(taskId)) next.delete(taskId);
     else next.add(taskId);
     setSelected(next);
+  };
+
+  const handleBatchDelete = async () => {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    if (!confirm(`确定删除选中的 ${ids.length} 个任务？此操作不可撤销。`)) return;
+    setExporting(true);
+    try {
+      const r = await guard(id, () => api.batchDeleteTasks(id, ids, getOwnerToken(id)));
+      showToast(`已删除 ${r.deleted} 个任务${r.skipped ? `，${r.skipped} 个跳过` : ''}`);
+      setSelected(new Set());
+      setMergeMode(false);
+      load();
+    } catch (err) {
+      if (err.message !== 'owner verification cancelled') showToast('删除失败: ' + err.message, 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleBatchMove = async (status) => {
+    if (selected.size === 0) return;
+    const ids = [...selected];
+    setExporting(true);
+    try {
+      const r = await guard(id, () => api.batchMoveTasks(id, ids, status, getOwnerToken(id)));
+      showToast(`已移动 ${r.moved} 个任务到「${STATUS_META[status].label}」`);
+      setSelected(new Set());
+      setMergeMode(false);
+      load();
+    } catch (err) {
+      if (err.message !== 'owner verification cancelled') showToast('移动失败: ' + err.message, 'error');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const saveSettings = async () => {
@@ -554,6 +592,24 @@ export default function Tasks() {
             <>
               <button className="btn btn-sm btn-secondary" onClick={() => { setMergeMode(false); setSelected(new Set()); }}>取消</button>
               <button className="btn btn-sm btn-secondary" onClick={handleMergeSelected} disabled={selected.size < 2}>合并所选 ({selected.size})</button>
+              <div style={{ position: 'relative' }}>
+                <button className="btn btn-sm btn-secondary" onClick={() => setShowBatchMove(!showBatchMove)} disabled={selected.size === 0 || exporting}>
+                  {exporting ? '处理中...' : '移动所选 ▾'}
+                </button>
+                {showBatchMove && (
+                  <div className="dropdown-menu">
+                    {STATUS_KEYS.map(s => (
+                      <div key={s} className="dropdown-item" onClick={() => { setShowBatchMove(false); handleBatchMove(s); }}>
+                        <span className="task-column-dot" style={{ background: STATUS_META[s].color, display: 'inline-block', marginRight: 6 }} />
+                        {STATUS_META[s].label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-sm btn-danger" onClick={handleBatchDelete} disabled={selected.size === 0 || exporting}>
+                删除所选 ({selected.size})
+              </button>
               <button className="btn btn-sm btn-primary" onClick={() => { setMergeMode(false); handlePushGitlab(); }} disabled={selected.size === 0}>推送所选到 GitLab</button>
             </>
           ) : (
