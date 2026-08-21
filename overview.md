@@ -57,6 +57,22 @@
 - 线上 https://protobuddy.20140107.xyz 验证：3 页面 nav count=1，文本「优美丝路二期 | 概览 | 评审 | 方案 | 任务 | 设置」
 - 部署：deployment `dp0qsyt1scwc`
 
+## 任务三：方案生成提示词增强 — SMART EDIT 智能修改方法论（git 699d83d）
+
+**需求**：方案生成 Agent 应做「精准修改」而非机械字符串替换，防止替换引入逻辑冲突、重复代码、遗漏关联项。
+
+**实现**（`backend/src/services/makersModels.js`，+7/-2）：
+- systemPrompt Rules 首部新增**最高优先级** `SMART EDIT methodology` 区块，4 步：
+  1. **LOCATE 定位问题** — 先审查目标代码根因，分析简单替换可能引入的错误类型（逻辑冲突/重复代码/遗漏关联项）
+  2. **REASON 智能修改** — 基于文件上下文做结构性和逻辑性修改，new_code 与整体设计一致；禁止「加 TODO 注释」式敷衍改动
+  3. **AVOID 错误规避** — 自查变量/函数引用一致性、样式或组件命名冲突、依赖关系断裂
+  4. **VERIFY 验证结果** — old_code 唯一匹配、new_code 自洽（标签闭合/括号配对），description 末尾注明「关键点/注意」
+- 预检失败重试反馈（feedbackBlock）同步要求按 SMART EDIT 四步重做
+- 与现有 old_code/new_code 契约、precheck/apply 机制完全兼容，零前端改动
+
+**验证**：`node --check` 通过；构建快照含 8 处 SMART EDIT 匹配；线上 health 200 + 前端 200
+**部署**：`dplloznbn6zf` → https://protobuddy.20140107.xyz
+
 ## 后续可选
 - PlanReview/Tasks/Dashboard 剩余低频内联样式可继续渐进迁移
 - 可选：骨架屏替代整页 spinner、路由级代码分割
