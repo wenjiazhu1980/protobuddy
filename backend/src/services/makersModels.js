@@ -254,6 +254,12 @@ export async function generatePlanWithMakers(apiKey, annotations, files, model =
   ]
 }
 Rules:
+## SMART EDIT methodology（智能修改方法论——最高优先级，用于修正一切"机械字符串替换"倾向）:
+你产出的是对原型文件的「精准修改」，不是机械替换。每条 change 的 old_code→new_code 必须按以下 4 步完成：
+1. LOCATE（定位问题）: 先审查目标文件中当前不符合预期的代码，判断问题根因（逻辑错误/样式缺失/功能缺失/交互异常），并分析"简单字符串替换"可能引入的错误类型：逻辑冲突、重复代码、遗漏关联项（引用该元素的其他脚本/样式/页面）。
+2. REASON（智能修改）: 基于文件整体上下文做结构性和逻辑性修改——调整函数体、属性值、事件绑定、样式规则本身，让 new_code 与整体设计一致；禁止「在 old_code 前后加一行注释/TODO」式的敷衍改动；若纯文本替换无法解决问题，new_code 必须包含问题所在的结构（如触发该行为的 class、事件绑定、样式声明）。
+3. AVOID（错误规避）: 产出前自查三类关联错误——① 变量/函数/ID 引用一致性：改动标识符时必须同步所有引用点；② 样式或组件命名冲突：不引入与现有选择器冲突的 class/id，优先复用已有样式；③ 依赖关系断裂：删除或修改元素前确认没有 JS 事件、CSS 选择器或跨页面链接引用它，防止破坏原型其他功能。
+4. VERIFY（验证结果）: 产出前自查——old_code 从文件摘录逐字符复制且在目标文件中唯一匹配；new_code 完整自洽（标签闭合/括号配对/引号成对）；每条 change 的 description 末尾用「关键点：…；注意：…」写明修改核心与需要人工复核的风险点。
 - CONTEXT SCOPE rule: 严格限制上下文范围，仅包含本次实际需要修改的文件，剔除所有无关的上下文信息。例如，如果本次修改仅涉及商家控制台页面，则只需关注与该商家控制台页面相关的文件、代码段和配置，避免被其他模块、页面或系统的无关内容分散注意力。请确保修改建议精简、聚焦，快速定位到目标文件并进行精准修改，同时保持修改过程的清晰性和高效性。如果提供的文件列表中包含与批注无关的文件，直接忽略它们，不要把无关文件的内容纳入 reasoning。
 - file_path must be copied VERBATIM from the "--- File: <path>" headers of the project files list in the user message. Keep the exact subdirectory prefix as shown there.
 - Paths that appear inside agents.md / project rules may come from ANOTHER machine's local folder layout (e.g. "原型设计/phase-2/..." while storage has "phase-2/..."). NEVER use paths from the rules text as file_path — always use the storage-relative path from the files list.
@@ -282,8 +288,7 @@ ${rulesBlock}`
     // can fix its own mistakes instead of surfacing them at apply time.
     const feedbackBlock = retryFeedback
       ? `\n\n## VALIDATION ERRORS FROM YOUR PREVIOUS ATTEMPT
-Your previously generated changes FAILED automated prechecks. Fix EVERY error below and output the FULL corrected plan.
-For each error, re-read the provided file excerpts, copy old_code character-for-character from the real file content, ensure it matches EXACTLY ONCE, and use only file paths from the "--- File: <path>" headers.
+Your previously generated changes FAILED automated prechecks. Fix EVERY error below and output the FULL corrected plan, following the SMART EDIT methodology above (LOCATE → REASON → AVOID → VERIFY): re-read the provided file excerpts, copy old_code character-for-character from the real file content, ensure it matches EXACTLY ONCE, keep new_code structurally consistent with the surrounding design, and use only file paths from the "--- File: <path>" headers.
 ${retryFeedback}`
       : '';
 
