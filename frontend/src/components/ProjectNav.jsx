@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, NavLink, useLocation } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { projectTabs } from './projectTabs.js';
 import { api } from '../api.js';
 
@@ -8,22 +8,21 @@ import { api } from '../api.js';
  * sticky 在 TopBar 下方，移动端改为横向可滚动 tab 条。
  * tasks/new、tasks/:taskId 归属「任务」Tab（NavLink 前缀匹配）。
  */
-export default function ProjectNav() {
-  const { id } = useParams();
+export default function ProjectNav({ projectId }) {
   const location = useLocation();
   const [projectName, setProjectName] = useState('');
 
   useEffect(() => {
     let alive = true;
-    if (!id) return;
-    api.getProject(id)
+    if (!projectId) return;
+    api.getProject(projectId)
       .then((p) => alive && setProjectName(p.name || ''))
       .catch(() => {});
     return () => { alive = false; };
-  }, [id]);
+  }, [projectId]);
 
-  if (!id) return null;
-  const tabs = projectTabs(id);
+  if (!projectId) return null;
+  const tabs = projectTabs(projectId);
 
   return (
     <nav className="project-nav">

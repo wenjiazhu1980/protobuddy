@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Routes, Route, Link, useLocation, matchPath } from 'react-router-dom';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import ProjectList from './pages/ProjectList.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Review from './pages/Review.jsx';
@@ -37,8 +37,9 @@ function TopBar() {
   const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/');
 
   // 提取项目 id（若在项目内路由），汉堡菜单追加项目 Tab
-  const projMatch = matchPath('/project/:id/*', location.pathname) || matchPath('/project/:id', location.pathname);
-  const projectId = projMatch?.params?.id;
+  const projectId = location.pathname.startsWith('/project/')
+    ? location.pathname.split('/')[2]
+    : null;
   const tabs = projectId ? projectTabs(projectId) : [];
 
   return (
@@ -75,14 +76,15 @@ function TopBar() {
 
 export default function App() {
   const location = useLocation();
-  const inProject = matchPath('/project/:id/*', location.pathname) || matchPath('/project/:id', location.pathname);
+  // HashRouter 下 location.pathname 仍为 hash 路径（如 /project/3/review）
+  const inProject = location.pathname.startsWith('/project/');
 
   return (
     <OwnerAuthProvider>
       <ToastProvider>
         <div className="app-layout">
           <TopBar />
-          {inProject && <ProjectNav />}
+          {inProject && <ProjectNav projectId={location.pathname.split('/')[2]} />}
           <Routes>
             <Route path="/" element={<ProjectList />} />
             <Route path="/project/:id" element={<Dashboard />} />
