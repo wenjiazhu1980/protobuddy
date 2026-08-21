@@ -1,4 +1,6 @@
-# 前端全面改版 — Figma 风格黑白灰 UI
+# 前端改版 + Tab 导航丢失修复
+
+## 任务一：前端全面改版 — Figma 风格黑白灰 UI
 
 ## 任务概述
 对 ProtoBuddy 前端进行整体改版：响应式三档适配（桌面/平板/移动端）、流畅交互动效、Figma 风格简洁现代的黑白灰视觉体系。纯 CSS 令牌化实现，零新增依赖。
@@ -36,6 +38,24 @@
 - 前端构建通过（CSS 27.76 kB gzip 5.83 kB）
 - 已部署：deployment `dp8wtmca7aag` → https://protobuddy.20140107.xyz（home 200，线上 CSS 已含 pageEnter/overlayIn/--review-cols/prefers-reduced-motion）
 - 代码已推送：git `ddc36f1`
+
+## 任务二：修复项目内 Tab 导航丢失（git d74af27）
+
+**问题**：改版后 Dashboard/Review/Plan/Tasks/Settings 页面均不显示「概览/评审/方案/任务/设置」Tab 栏，方案审核、任务清单等功能入口全部丢失。
+
+**根因**（React Router v6 陷阱）：
+- App.jsx 将 `<ProjectNav />` 放在 `<Routes>` 闭合标签**之外**，组件内 `useParams()` 拿不到 `:id` → 返回 undefined → `if (!projectId) return null` 整块不渲染
+- 这是 React Router v6 的常见坑：`useParams` 只在 `<Routes>` 匹配上下文内可用，挂载在 Routes 外的组件拿不到参数
+
+**修复**：
+- App.jsx：`location.pathname.startsWith('/project/')` 判断 inProject，`split('/')[2]` 提取 projectId 以 prop 传入 `<ProjectNav projectId={...} />`
+- ProjectNav.jsx：改为接收 `{ projectId }` prop，不再依赖 useParams（import 同步移除）
+- TopBar 汉堡菜单项目 id 同样改为 split 解析，全局移除 matchPath 依赖
+
+**验证**：
+- 本地 Playwright 5 页面（dashboard/review/plan/tasks/settings）nav 全部渲染，含项目名 + 5 Tab
+- 线上 https://protobuddy.20140107.xyz 验证：3 页面 nav count=1，文本「优美丝路二期 | 概览 | 评审 | 方案 | 任务 | 设置」
+- 部署：deployment `dp0qsyt1scwc`
 
 ## 后续可选
 - PlanReview/Tasks/Dashboard 剩余低频内联样式可继续渐进迁移
